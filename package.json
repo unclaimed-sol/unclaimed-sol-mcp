@@ -1,6 +1,11 @@
 {
   "name": "@unclaimed-sol/mcp",
   "version": "1.2.2",
+  "mcpName": "io.github.unclaimed-sol/claim-sol",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/unclaimed-sol/unclaimed-sol-mcp"
+  },
   "description": "Scan and reclaim dormant SOL from your Solana wallet. Powered by UnclaimedSOL.",
   "type": "module",
   "main": "dist/index.js",

@@ -113,7 +113,11 @@ function consumeToken(token: string, wallet: string): void {
 
 // ---- Tool Definition ----
 
-export function getClaimToolDefinition() {
+export function getClaimToolDefinition(keypairWallet?: string) {
+  const walletDesc = keypairWallet
+    ? `Solana wallet address. Must match configured keypair. Defaults to ${keypairWallet}`
+    : 'Solana wallet address. Must match configured keypair.';
+
   return {
     name: 'claim_sol',
     description:
@@ -128,8 +132,7 @@ export function getClaimToolDefinition() {
       properties: {
         wallet_address: {
           type: 'string',
-          description:
-            'Solana wallet address. Must match configured keypair.',
+          description: walletDesc,
         },
         dry_run: {
           type: 'boolean',
@@ -148,7 +151,7 @@ export function getClaimToolDefinition() {
           default: DEFAULT_MAX_TRANSACTIONS,
         },
       },
-      required: ['wallet_address'],
+      ...(keypairWallet ? {} : { required: ['wallet_address'] }),
     },
   };
 }
@@ -156,7 +159,7 @@ export function getClaimToolDefinition() {
 // ---- Handler ----
 
 const InputSchema = z.object({
-  wallet_address: z.string(),
+  wallet_address: z.string().optional(),
   dry_run: z.boolean().default(true),
   execution_token: z.string().optional(),
   max_transactions: z
@@ -179,9 +182,17 @@ export async function handleClaim(
       dry_run,
       execution_token,
       max_transactions,
-    } = InputSchema.parse(args);
+    } = InputSchema.parse(args ?? {});
+    const resolvedAddress =
+      wallet_address || config.keypair?.publicKey.toBase58();
+    if (!resolvedAddress) {
+      return {
+        content: [{ type: 'text', text: 'wallet_address is required.' }],
+        isError: true,
+      };
+    }
     const { pubkey: walletPubkey } =
-      await validateWalletAddress(wallet_address);
+      await validateWalletAddress(resolvedAddress);
     const wallet = walletPubkey.toBase58();
     const url = `${WEBSITE_URL}?ref=mcp-claim`;
 

@@ -12,6 +12,14 @@ import { TransactionBuilder } from './services/transaction.js';
 import { SignerService } from './services/signer.js';
 import { getScanToolDefinition, handleScan } from './tools/scan.js';
 import { getClaimToolDefinition, handleClaim } from './tools/claim.js';
+import {
+  getClaimRewardsToolDefinition,
+  handleClaimRewards,
+} from './tools/claim-rewards.js';
+import {
+  getClaimStakesToolDefinition,
+  handleClaimStakes,
+} from './tools/claim-stakes.js';
 
 async function main() {
   const config = loadConfig();
@@ -26,11 +34,27 @@ async function main() {
     { capabilities: { tools: {} } },
   );
 
+  const keypairWallet = config.keypair?.publicKey.toBase58();
+
   server.setRequestHandler(ListToolsRequestSchema, async () => {
-    const tools = [getScanToolDefinition()];
-    if (config.claimEnabled) tools.push(getClaimToolDefinition());
+    const tools = [getScanToolDefinition(keypairWallet)];
+    if (config.claimEnabled) {
+      tools.push(getClaimToolDefinition(keypairWallet));
+      tools.push(getClaimRewardsToolDefinition(keypairWallet));
+      tools.push(getClaimStakesToolDefinition(keypairWallet));
+    }
     return { tools };
   });
+
+  const claimNotConfigured = {
+    content: [
+      {
+        type: 'text' as const,
+        text: 'Vibe Claiming not configured. Set SOLANA_KEYPAIR_PATH to enable — see https://docs.unclaimedsol.com/mcp',
+      },
+    ],
+    isError: true,
+  };
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
@@ -40,18 +64,19 @@ async function main() {
     }
 
     if (name === 'claim_sol') {
-      if (!config.claimEnabled || !txBuilder || !signer) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: 'Vibe Claiming not configured. Set SOLANA_KEYPAIR_PATH to enable — see https://unclaimedsol.com',
-            },
-          ],
-          isError: true,
-        };
-      }
+      if (!config.claimEnabled || !txBuilder || !signer)
+        return claimNotConfigured;
       return handleClaim(args, config, scanner, txBuilder, signer);
+    }
+
+    if (name === 'claim_rewards') {
+      if (!config.claimEnabled || !signer) return claimNotConfigured;
+      return handleClaimRewards(args, config, scanner, signer);
+    }
+
+    if (name === 'claim_stakes') {
+      if (!config.claimEnabled || !signer) return claimNotConfigured;
+      return handleClaimStakes(args, config, scanner, signer);
     }
 
     return {

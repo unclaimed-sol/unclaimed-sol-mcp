@@ -28,6 +28,13 @@ export const EXPECTED_PROGRAM_IDS = [
   'ComputeBudget111111111111111111111111111111', // Compute Budget
 ];
 
+// Fee rate caps (basis points, 1 bp = 0.01%).
+// Rewards: hardcoded at 15% in backend rewards.ts.
+// Stakes: configurable via STAKES_REWARD_FEE env var, defaults to 10%.
+// The MCP enforces these as hard ceilings — transactions with higher fees are rejected.
+export const REWARDS_FEE_BPS = 1_500; // 15%
+export const STAKES_FEE_BPS = 1_000; // 10%
+
 // Priority fee bounds (microlamports per CU)
 export const PRIORITY_FEE_MIN = 0;
 export const PRIORITY_FEE_MAX = 200_000;

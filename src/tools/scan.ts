@@ -10,7 +10,7 @@ import { formatSol } from '../formatter.js';
 import { WEBSITE_URL } from '../constants.js';
 
 const InputSchema = z.object({
-  wallet_address: z.string(),
+  wallet_address: z.string().optional(),
 });
 
 const scanCache = new ScanCache<{
@@ -19,7 +19,11 @@ const scanCache = new ScanCache<{
   bufferCount: number;
 }>();
 
-export function getScanToolDefinition() {
+export function getScanToolDefinition(keypairWallet?: string) {
+  const walletDesc = keypairWallet
+    ? `Solana wallet address (base58 public key). Defaults to configured keypair wallet: ${keypairWallet}`
+    : 'Solana wallet address (base58 public key)';
+
   return {
     name: 'scan_claimable_sol',
     description:
@@ -31,11 +35,10 @@ export function getScanToolDefinition() {
       properties: {
         wallet_address: {
           type: 'string',
-          description:
-            'Solana wallet address (base58 public key)',
+          description: walletDesc,
         },
       },
-      required: ['wallet_address'],
+      ...(keypairWallet ? {} : { required: ['wallet_address'] }),
     },
   };
 }
@@ -46,29 +49,39 @@ export async function handleScan(
   scanner: ScannerService,
 ): Promise<{ content: { type: string; text: string }[]; isError?: boolean }> {
   try {
-    const { wallet_address } = InputSchema.parse(args);
-    const { pubkey } = await validateWalletAddress(wallet_address);
+    const { wallet_address } = InputSchema.parse(args ?? {});
+    const resolvedAddress =
+      wallet_address || config.keypair?.publicKey.toBase58();
+    if (!resolvedAddress) {
+      return {
+        content: [{ type: 'text', text: 'wallet_address is required.' }],
+        isError: true,
+      };
+    }
+    const { pubkey } = await validateWalletAddress(resolvedAddress);
     const wallet = pubkey.toBase58();
     const ref = config.claimEnabled ? 'ref=mcp-claim' : 'ref=mcp';
     const url = `${WEBSITE_URL}?${ref}`;
 
-    // Check cache
+    // Check cache for main scan
     const cached = scanCache.get(wallet);
+    let cacheAgeSec = 0;
+    let data: { totalSol: number; tokenCount: number; bufferCount: number };
+
     if (cached) {
-      const ageSec = Math.round(cached.ageMs / 1000);
-      return buildResponse(cached.data, config.claimEnabled, url, ageSec);
+      data = cached.data;
+      cacheAgeSec = Math.round(cached.ageMs / 1000);
+    } else {
+      const summary = await scanner.getScanSummary(wallet);
+      data = {
+        totalSol: summary.totalClaimableSol,
+        tokenCount: summary.tokenCount || 0,
+        bufferCount: summary.bufferCount || 0,
+      };
+      scanCache.set(wallet, data);
     }
 
-    // Call backend
-    const summary = await scanner.getScanSummary(wallet);
-    const data = {
-      totalSol: summary.totalClaimableSol,
-      tokenCount: summary.tokenCount || 0,
-      bufferCount: summary.bufferCount || 0,
-    };
-
-    scanCache.set(wallet, data);
-    return buildResponse(data, config.claimEnabled, url, 0);
+    return buildResponse(data, config.claimEnabled, url, cacheAgeSec);
   } catch (err) {
     if (err instanceof WalletValidationError) {
       return { content: [{ type: 'text', text: err.message }], isError: true };
@@ -111,18 +124,14 @@ function buildResponse(
   const cacheNote =
     cacheAgeSec > 0 ? ` (Scanned ${cacheAgeSec}s ago)` : '';
 
-  const trustLine =
-    'UnclaimedSOL will never DM you or ask for your seed phrase.';
-
   if (claimEnabled) {
     return {
       content: [
         {
           type: 'text',
           text:
-            `This wallet has ${solStr} claimable${countStr} (inclusive of 5% fee).${cacheNote}\n\n` +
-            `You can claim directly using the claim_sol tool, or visit ${url}\n\n` +
-            `${trustLine}`,
+            `This wallet has ${solStr} claimable${countStr}.${cacheNote}` +
+            `\n\nWould you like to claim now?`,
         },
       ],
     };
@@ -133,9 +142,9 @@ function buildResponse(
       {
         type: 'text',
         text:
-          `This wallet has ${solStr} claimable${countStr} (inclusive of 5% fee).${cacheNote}\n\n` +
-          `Claim at: ${url}\n\n` +
-          `To enable Vibe Claiming from your AI assistant, set SOLANA_KEYPAIR_PATH in your MCP config.\n${trustLine}`,
+          `This wallet has ${solStr} claimable${countStr}.${cacheNote}` +
+          `\n\nClaim at: ${url}` +
+          `\nTo enable claiming from your AI assistant, set SOLANA_KEYPAIR_PATH in your MCP config.`,
       },
     ],
   };

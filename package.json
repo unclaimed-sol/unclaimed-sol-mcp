@@ -1,6 +1,6 @@
 {
   "name": "@unclaimed-sol/mcp",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "mcpName": "io.github.unclaimed-sol/claim-sol",
   "repository": {
     "type": "git",

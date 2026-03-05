@@ -1,10 +1,17 @@
 # @unclaimed-sol/mcp
 
+[![npm version](https://img.shields.io/npm/v/%40unclaimed-sol%2Fmcp)](https://www.npmjs.com/package/@unclaimed-sol/mcp)
+[![npm downloads](https://img.shields.io/npm/dm/%40unclaimed-sol%2Fmcp)](https://www.npmjs.com/package/@unclaimed-sol/mcp)
+[![Node >=18](https://img.shields.io/badge/node-%3E%3D18-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+
 MCP server for [UnclaimedSOL](https://unclaimedsol.com) — scan and reclaim dormant SOL from Solana wallets directly from AI assistants like Claude, ChatGPT, and others that support the [Model Context Protocol](https://modelcontextprotocol.io).
 
 See also:
 
 - [Security model](./SECURITY.md)
+- [npm package](https://www.npmjs.com/package/@unclaimed-sol/mcp)
+- [UnclaimedSOL website](https://unclaimedsol.com)
 
 ## What it does
 
@@ -46,6 +53,17 @@ Claim SOL from deactivated stake accounts. Requires a configured keypair. Uses t
 
 **Inputs:** `wallet_address` (optional in claim-enabled mode, defaults to configured keypair wallet), `dry_run` (default true), `execution_token`, `stake_accounts` (optional array)
 
+## Example prompts
+
+- "Scan my wallet for reclaimable SOL"
+- "How much SOL can I reclaim?"
+- "Do a dry run to see what I can claim"
+- "Claim my dormant token accounts"
+- "Claim rewards for my wallet"
+- "Claim my deactivated stakes"
+- "How much SOL can I reclaim from `<wallet_address>`?"
+- "Scan `<wallet_address>` for reclaimable SOL"
+
 ## Setup
 
 ### Prerequisites
@@ -53,7 +71,15 @@ Claim SOL from deactivated stake accounts. Requires a configured keypair. Uses t
 - Node.js 18+
 - npm
 
-### Install and build
+### Quick install (recommended)
+
+No clone/build required if your MCP client supports package commands:
+
+```bash
+npx -y @unclaimed-sol/mcp
+```
+
+### Install and build (alternative)
 
 ```bash
 git clone https://github.com/unclaimed-sol/unclaimed-sol-mcp.git && cd unclaimed-sol-mcp
@@ -63,28 +89,30 @@ npm run build
 
 ## Configuration
 
-### Scan-only mode (no keypair)
+### Vibe Claiming mode (recommended)
 
-Only the `scan_claimable_sol` tool is exposed. No transactions are signed or sent.
+All tools are exposed (`scan_claimable_sol`, `claim_sol`, `claim_rewards`, `claim_stakes`). Transactions are signed locally with your keypair and broadcast to the Solana network.
 
-Add to your MCP client config (e.g. `claude_desktop_config.json`):
+### For Claude Desktop / Cursor / Windsurf
+
+Using npm package (recommended):
 
 ```json
 {
   "mcpServers": {
     "unclaimed-sol": {
-      "command": "node",
-      "args": ["/absolute/path/to/unclaimed-sol-mcp/dist/index.js"],
+      "command": "npx",
+      "args": ["-y", "@unclaimed-sol/mcp"],
+      "env": {
+        "SOLANA_KEYPAIR_PATH": "~/.config/solana/id.json",
+        "SOLANA_RPC_URL": "https://your-rpc-provider.com"
+      }
     }
   }
 }
 ```
 
-### Vibe Claiming mode (with keypair)
-
-All tools are exposed (`scan_claimable_sol`, `claim_sol`, `claim_rewards`, `claim_stakes`). Transactions are signed locally with your keypair and broadcast to the Solana network.
-
-### For Claude Desktop / Cursor / Windsurf
+Using local build:
 
 ```json
 {
@@ -103,17 +131,85 @@ All tools are exposed (`scan_claimable_sol`, `claim_sol`, `claim_rewards`, `clai
 
 ### For Claude Code
 
-```bash
-# Scan only
-claude mcp add unclaimed-sol \
-  -- node /absolute/path/to/unclaimed-sol-mcp/dist/index.js
+Using npm package (recommended):
 
-# Scan + Vibe Claiming
+```bash
+claude mcp add unclaimed-sol \
+  -e SOLANA_KEYPAIR_PATH=~/.config/solana/id.json \
+  -e SOLANA_RPC_URL=https://your-rpc-provider.com \
+  -- npx -y @unclaimed-sol/mcp
+```
+
+Using local build:
+
+```bash
 claude mcp add unclaimed-sol \
   -e SOLANA_KEYPAIR_PATH=~/.config/solana/id.json \
   -e SOLANA_RPC_URL=https://your-rpc-provider.com \
   -- node /absolute/path/to/unclaimed-sol-mcp/dist/index.js
 ```
+
+### For Codex CLI
+
+Using npm package (recommended):
+
+```bash
+codex mcp add unclaimed-sol \
+  --env SOLANA_KEYPAIR_PATH=~/.config/solana/id.json \
+  --env SOLANA_RPC_URL=https://your-rpc-provider.com \
+  -- npx -y @unclaimed-sol/mcp
+```
+
+Using local build:
+
+```bash
+codex mcp add unclaimed-sol \
+  --env SOLANA_KEYPAIR_PATH=~/.config/solana/id.json \
+  --env SOLANA_RPC_URL=https://your-rpc-provider.com \
+  -- node /absolute/path/to/unclaimed-sol-mcp/dist/index.js
+```
+
+### Optional scan-only mode (no keypair)
+
+Only the `scan_claimable_sol` tool is exposed. No transactions are signed or sent.
+
+Using npm package:
+
+```json
+{
+  "mcpServers": {
+    "unclaimed-sol": {
+      "command": "npx",
+      "args": ["-y", "@unclaimed-sol/mcp"]
+    }
+  }
+}
+```
+
+Using local build:
+
+```json
+{
+  "mcpServers": {
+    "unclaimed-sol": {
+      "command": "node",
+      "args": ["/absolute/path/to/unclaimed-sol-mcp/dist/index.js"]
+    }
+  }
+}
+```
+
+## Verify installation
+
+- Claude Code: `claude mcp list` and confirm `unclaimed-sol` is present.
+- Codex CLI: `codex mcp list` and confirm `unclaimed-sol` is present.
+- Smoke test: ask your assistant to run `scan wallet <your_wallet>` and confirm `scan_claimable_sol` executes.
+
+## Troubleshooting
+
+- If tools do not appear, restart your MCP client after config changes.
+- If using local build, ensure `dist/index.js` exists (`npm run build`) and path is absolute.
+- If claim tools are missing, confirm `SOLANA_KEYPAIR_PATH` (or `SOLANA_PRIVATE_KEY`) is set.
 
 ## Environment variables
 

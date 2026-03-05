@@ -2,6 +2,10 @@
 
 MCP server for [UnclaimedSOL](https://unclaimedsol.com) — scan and reclaim dormant SOL from Solana wallets directly from AI assistants like Claude, ChatGPT, and others that support the [Model Context Protocol](https://modelcontextprotocol.io).
 
+See also:
+
+- [Security model](./SECURITY.md)
+
 ## What it does
 
 Solana wallets accumulate rent-locked SOL in dormant token accounts (zero-balance ATAs) and program buffer accounts. This MCP server lets AI assistants:

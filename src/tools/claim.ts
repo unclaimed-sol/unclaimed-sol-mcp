@@ -30,9 +30,11 @@ import {
 interface TokenEntry {
   token: string;
   wallet: string;
+  // Account set approved during dry_run (already capped by max_transactions).
   tokens: TokenAccountInfo[];
   buffers: BufferAccountInfo[];
   plan: ClaimPlan;
+  maxTransactions: number;
   createdAt: number;
 }
 
@@ -44,6 +46,7 @@ function generateToken(
   tokens: TokenAccountInfo[],
   buffers: BufferAccountInfo[],
   plan: ClaimPlan,
+  maxTransactions: number,
 ): string {
   // Evict expired
   const now = Date.now();
@@ -82,6 +85,7 @@ function generateToken(
     tokens,
     buffers,
     plan,
+    maxTransactions,
     createdAt: now,
   };
   allTokens.set(token, entry);
@@ -109,6 +113,82 @@ function consumeToken(token: string, wallet: string): void {
   allTokens.delete(token);
   if (tokensByWallet.get(wallet)?.token === token)
     tokensByWallet.delete(wallet);
+}
+
+function shortenAddress(value: string): string {
+  if (value.length <= 10) return value;
+  return `${value.slice(0, 4)}...${value.slice(-4)}`;
+}
+
+function tokenLabel(token: TokenAccountInfo): string {
+  const symbol = token.symbol?.trim();
+  const name = token.name?.trim();
+
+  if (symbol && name && symbol.toLowerCase() !== name.toLowerCase()) {
+    return `${symbol} (${name})`;
+  }
+
+  return symbol || name || 'Unknown token';
+}
+
+function normalizeExclude(values?: string[]): Set<string> {
+  const out = new Set<string>();
+  for (const value of values || []) {
+    const v = value.trim().toLowerCase();
+    if (v.length > 0) out.add(v);
+  }
+  return out;
+}
+
+function isExcludedByNameOrSymbol(
+  token: TokenAccountInfo,
+  normalizedExclude: Set<string>,
+): boolean {
+  if (normalizedExclude.size === 0) return false;
+
+  const symbol = token.symbol?.trim().toLowerCase();
+  const name = token.name?.trim().toLowerCase();
+
+  return Boolean(
+    (symbol && normalizedExclude.has(symbol)) ||
+      (name && normalizedExclude.has(name)),
+  );
+}
+
+function buildTokenPreview(tokens: TokenAccountInfo[]): string {
+  if (tokens.length === 0) return '';
+
+  const empty = tokens.filter((t) => t.amountUi === 0);
+  const nonEmpty = tokens.filter((t) => t.amountUi > 0);
+  const MAX_PER_GROUP = 8;
+  const lines: string[] = ['Tokens selected for burn (safe mode):'];
+
+  const appendGroup = (
+    title: string,
+    group: TokenAccountInfo[],
+    includeBalance: boolean,
+  ) => {
+    if (group.length === 0) return;
+    lines.push('', `${title}:`);
+
+    for (const token of group.slice(0, MAX_PER_GROUP)) {
+      const base = `  - ${tokenLabel(token)} — ${shortenAddress(token.mintKey)}`;
+      if (!includeBalance) {
+        lines.push(base);
+        continue;
+      }
+      lines.push(`${base} (balance: ${token.amountUi})`);
+    }
+
+    if (group.length > MAX_PER_GROUP) {
+      lines.push(`  ...and ${group.length - MAX_PER_GROUP} more`);
+    }
+  };
+
+  appendGroup('Empty token accounts', empty, false);
+  appendGroup('Non-zero token accounts', nonEmpty, true);
+
+  return `\n\n${lines.join('\n')}`;
 }
 
 // ---- Tool Definition ----
@@ -150,6 +230,12 @@ export function getClaimToolDefinition(keypairWallet?: string) {
           description: 'Max txs to send. Default 10.',
           default: DEFAULT_MAX_TRANSACTIONS,
         },
+        exclude: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'Optional token symbols or names to skip at execution time (case-insensitive). Example: ["BONK", "USD Coin"].',
+        },
       },
       ...(keypairWallet ? {} : { required: ['wallet_address'] }),
     },
@@ -167,6 +253,7 @@ const InputSchema = z.object({
     .int()
     .positive()
     .default(DEFAULT_MAX_TRANSACTIONS),
+  exclude: z.array(z.string()).optional(),
 });
 
 export async function handleClaim(
@@ -182,6 +269,7 @@ export async function handleClaim(
       dry_run,
       execution_token,
       max_transactions,
+      exclude,
     } = InputSchema.parse(args ?? {});
     const resolvedAddress =
       wallet_address || config.keypair?.publicKey.toBase58();
@@ -235,11 +323,21 @@ export async function handleClaim(
         };
       }
 
+      const selectedTokenSet = new Set(plan.selectedTokenPubkeys);
+      const selectedBufferSet = new Set(plan.selectedBufferPubkeys);
+      const selectedTokens = tokensResp.tokens.filter((t) =>
+        selectedTokenSet.has(t.pubKey),
+      );
+      const selectedBuffers = buffersResp.buffers.filter((b) =>
+        selectedBufferSet.has(b.pubkey),
+      );
+
       const token = generateToken(
         wallet,
-        tokensResp.tokens,
-        buffersResp.buffers,
+        selectedTokens,
+        selectedBuffers,
         plan,
+        max_transactions,
       );
 
       let text =
@@ -259,11 +357,19 @@ export async function handleClaim(
         text += `\n\n${plan.skippedFrozenCount} frozen account(s) skipped (cannot be closed).`;
       }
 
+      text += buildTokenPreview(selectedTokens);
+
       // Irreversibility warning
       text +=
         `\n\nThis will permanently close these accounts and burn any remaining ` +
         `token balances. This action is irreversible. For a visual breakdown of ` +
         `each account, review at ${url} before proceeding.`;
+
+      if (plan.tokenAccountCount > 0) {
+        text +=
+          `\n\nIf needed, you can skip specific tokens during execution with ` +
+          `exclude: ["TOKEN_SYMBOL", "Token Name"].`;
+      }
 
       // Execution token
       text +=
@@ -293,7 +399,34 @@ export async function handleClaim(
     }
 
     const entry = validateToken(execution_token, wallet);
-    const { plan } = entry;
+    const normalizedExclude = normalizeExclude(exclude);
+    const claimableTokens = entry.tokens.filter((t) => !t.isFrozen);
+    const filteredTokens = claimableTokens.filter(
+      (t) => !isExcludedByNameOrSymbol(t, normalizedExclude),
+    );
+    const excludedTokenCount = claimableTokens.length - filteredTokens.length;
+
+    if (filteredTokens.length === 0 && entry.buffers.length === 0) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: 'All claimable token accounts were excluded and there are no buffer accounts left to claim.',
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    const plan = normalizedExclude.size > 0
+      ? await txBuilder.buildClaimPlan(
+        filteredTokens,
+        entry.buffers,
+        walletPubkey,
+        entry.maxTransactions,
+        entry.plan.stakeInfo,
+      )
+      : entry.plan;
 
     // Pre-sign validation
     txBuilder.validateTransactions(plan.transactions, walletPubkey);
@@ -336,6 +469,10 @@ export async function handleClaim(
         `All ${results.length} transactions failed.\n\n` +
         `${failed.map((r, i) => `${i + 1}. ${r.error || 'unknown'}`).join('\n')}\n\n` +
         `Run claim_sol again (dry_run first) to retry.`;
+    }
+
+    if (excludedTokenCount > 0) {
+      text = `Excluded ${excludedTokenCount} token account(s) by name/symbol filter.\n\n${text}`;
     }
 
     if (plan.stakeInfo && plan.stakeInfo.count > 0) {

@@ -27,11 +27,15 @@ interface InstructionMeta {
   tokenCount: number;
   bufferCount: number;
   lamports: number;
+  tokenPubkeys: string[];
+  bufferPubkeys: string[];
 }
 
 export interface ClaimPlan {
   tokenAccountCount: number;
   bufferAccountCount: number;
+  selectedTokenPubkeys: string[];
+  selectedBufferPubkeys: string[];
   totalTokenAccountCount: number;
   totalBufferAccountCount: number;
   estimatedSol: number; // Net amount — 5% fee is already included
@@ -99,6 +103,8 @@ export class TransactionBuilder {
             tokenCount: chunk.length,
             bufferCount: 0,
             lamports: chunk.reduce((s, t) => s + t.lamports, 0),
+            tokenPubkeys: chunk.map((t) => t.pubKey),
+            bufferPubkeys: [],
           });
         }
       }
@@ -121,6 +127,8 @@ export class TransactionBuilder {
           tokenCount: 0,
           bufferCount: chunk.length,
           lamports: chunk.reduce((s, b) => s + b.lamports, 0),
+          tokenPubkeys: [],
+          bufferPubkeys: chunk.map((b) => b.pubkey),
         });
       }
     }
@@ -170,11 +178,15 @@ export class TransactionBuilder {
     const coveredTokenCount = usedMeta.reduce((s, m) => s + m.tokenCount, 0);
     const coveredBufferCount = usedMeta.reduce((s, m) => s + m.bufferCount, 0);
     const coveredLamports = usedMeta.reduce((s, m) => s + m.lamports, 0);
+    const selectedTokenPubkeys = usedMeta.flatMap((m) => m.tokenPubkeys);
+    const selectedBufferPubkeys = usedMeta.flatMap((m) => m.bufferPubkeys);
     const estimatedSol = coveredLamports / 1e9;
 
     return {
       tokenAccountCount: coveredTokenCount,
       bufferAccountCount: coveredBufferCount,
+      selectedTokenPubkeys,
+      selectedBufferPubkeys,
       totalTokenAccountCount: activeTokens.length,
       totalBufferAccountCount: buffers.length,
       estimatedSol,

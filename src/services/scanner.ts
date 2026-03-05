@@ -57,6 +57,7 @@ export interface ScanSummaryResponse {
   totalClaimableSol: number;
   assets: number;
   buffers: number;
+  maxClaimableSol?: number;
   tokenCount?: number;
   bufferCount?: number;
   safeModeAssets?: number;
@@ -160,6 +161,7 @@ export class ScannerService {
     }
 
     const data = (await response.json()) as ScanSummaryResponse;
+    const maxClaimableSol = data.maxClaimableSol ?? data.totalClaimableSol;
 
     // Prefer explicit safe claim total when available.
     if (data.safeClaimAmount != null) {
@@ -176,6 +178,7 @@ export class ScannerService {
     if (data.safeTokenCount != null) {
       data.tokenCount = data.safeTokenCount;
     }
+    data.maxClaimableSol = maxClaimableSol;
 
     return data;
   }

@@ -15,6 +15,7 @@ const InputSchema = z.object({
 
 const scanCache = new ScanCache<{
   totalSol: number;
+  maxSol: number;
   tokenCount: number;
   bufferCount: number;
 }>();
@@ -66,7 +67,7 @@ export async function handleScan(
     // Check cache for main scan
     const cached = scanCache.get(wallet);
     let cacheAgeSec = 0;
-    let data: { totalSol: number; tokenCount: number; bufferCount: number };
+    let data: { totalSol: number; maxSol: number; tokenCount: number; bufferCount: number };
 
     if (cached) {
       data = cached.data;
@@ -75,6 +76,7 @@ export async function handleScan(
       const summary = await scanner.getScanSummary(wallet);
       data = {
         totalSol: summary.totalClaimableSol,
+        maxSol: summary.maxClaimableSol ?? summary.totalClaimableSol,
         tokenCount: summary.tokenCount || 0,
         bufferCount: summary.bufferCount || 0,
       };
@@ -101,7 +103,7 @@ export async function handleScan(
 }
 
 function buildResponse(
-  data: { totalSol: number; tokenCount: number; bufferCount: number },
+  data: { totalSol: number; maxSol: number; tokenCount: number; bufferCount: number },
   claimEnabled: boolean,
   url: string,
   cacheAgeSec: number,
@@ -123,6 +125,10 @@ function buildResponse(
     accountCount > 0 ? ` across ${accountCount} reclaimable accounts` : '';
   const cacheNote =
     cacheAgeSec > 0 ? ` (Scanned ${cacheAgeSec}s ago)` : '';
+  const extraSol = data.maxSol - data.totalSol;
+  const upsellLine = extraSol > 0
+    ? `💡 ${formatSol(extraSol)} more may be reclaimable with advanced options at ${url}`
+    : '';
 
   if (claimEnabled) {
     return {
@@ -131,6 +137,7 @@ function buildResponse(
           type: 'text',
           text:
             `This wallet has ${solStr} claimable${countStr}.${cacheNote}` +
+            (upsellLine ? `\n\n${upsellLine}` : '') +
             `\n\nWould you like to claim now?`,
         },
       ],
@@ -143,6 +150,7 @@ function buildResponse(
         type: 'text',
         text:
           `This wallet has ${solStr} claimable${countStr}.${cacheNote}` +
+          (upsellLine ? `\n\n${upsellLine}` : '') +
           `\n\nClaim at: ${url}` +
           `\nTo enable claiming from your AI assistant, set SOLANA_KEYPAIR_PATH in your MCP config.`,
       },

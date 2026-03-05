@@ -26,7 +26,7 @@ Claim reclaimable SOL. Requires a configured keypair. Uses a two-step flow:
 1. **Dry run** (default) — shows a breakdown of reclaimable accounts, estimated SOL, fee, and transaction count. Returns a one-time `execution_token` valid for 60 seconds.
 2. **Execute** — call again with `dry_run: false` and the `execution_token` to sign and broadcast.
 
-**Inputs:** `wallet_address` (optional in claim-enabled mode, defaults to configured keypair wallet), `dry_run` (default true), `execution_token`, `max_transactions` (default 10)
+**Inputs:** `wallet_address` (optional in claim-enabled mode, defaults to configured keypair wallet), `dry_run` (default true), `execution_token`, `max_transactions` (default 10), `exclude` (optional token symbols/names to skip on execute)
 
 This action is irreversible — closed accounts cannot be recovered.
 

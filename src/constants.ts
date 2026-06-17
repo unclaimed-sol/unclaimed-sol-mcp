@@ -29,11 +29,15 @@ export const EXPECTED_PROGRAM_IDS = [
 ];
 
 // Fee rate caps (basis points, 1 bp = 0.01%).
-// Rewards: hardcoded at 15% in backend rewards.ts.
-// Stakes: configurable via STAKES_REWARD_FEE env var, defaults to 10%.
+// Non-Pump rewards are 15%; Pump/PumpSwap rewards are 3% with a 1 SOL cap
+// for SOL-denominated rewards and a 100 USDC cap for USDC-denominated rewards.
+// Stakes default to 3%.
 // The MCP enforces these as hard ceilings — transactions with higher fees are rejected.
 export const REWARDS_FEE_BPS = 1_500; // 15%
-export const STAKES_FEE_BPS = 1_000; // 10%
+export const PUMP_REWARDS_FEE_BPS = 300; // 3%
+export const PUMP_REWARDS_FEE_CAP_LAMPORTS = 1_000_000_000n; // 1 SOL
+export const PUMP_REWARDS_USDC_FEE_CAP_BASE_UNITS = 100_000_000n; // 100 USDC
+export const STAKES_FEE_BPS = 300; // 3%
 
 // Priority fee bounds (microlamports per CU)
 export const PRIORITY_FEE_MIN = 0;

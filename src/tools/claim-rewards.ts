@@ -4,6 +4,7 @@ import { Config } from '../config.js';
 import {
   ScannerService,
   RewardsBuildTxResponse,
+  RewardsScanResponse,
 } from '../services/scanner.js';
 import {
   TransactionValidationError,
@@ -16,7 +17,13 @@ import {
   WalletValidationError,
 } from '../validation.js';
 import { formatSol, formatSolFromLamports } from '../formatter.js';
-import { WEBSITE_URL, REWARDS_FEE_BPS } from '../constants.js';
+import {
+  WEBSITE_URL,
+  REWARDS_FEE_BPS,
+  PUMP_REWARDS_FEE_BPS,
+  PUMP_REWARDS_FEE_CAP_LAMPORTS,
+  PUMP_REWARDS_USDC_FEE_CAP_BASE_UNITS,
+} from '../constants.js';
 import {
   ExecutionTokenStore,
   ExecutionTokenError,
@@ -27,6 +34,72 @@ import {
 const tokenStore = new ExecutionTokenStore<RewardsBuildTxResponse>(
   'claim_rewards',
 );
+
+type RewardsFeeCapSource =
+  | RewardsScanResponse
+  | RewardsBuildTxResponse['rewardsSummary'];
+
+function totalLamportsForRewards(source: RewardsFeeCapSource): number {
+  return 'totalLamports' in source ? source.totalLamports : source.total;
+}
+
+function pumpNativeLamportsForRewards(source: RewardsFeeCapSource): number {
+  return (
+    source.pumpCashback +
+    source.pumpSwapCashback +
+    source.pumpCreatorFee +
+    source.pumpSwapCreatorFee
+  );
+}
+
+function accumulatorCloseLamportsForRewards(
+  source: RewardsFeeCapSource,
+): number {
+  return (
+    source.pumpAccumulatorCloseLamports +
+    source.pumpSwapAccumulatorCloseLamports
+  );
+}
+
+function calculateRewardsFeeCaps(source: RewardsFeeCapSource): {
+  nativeLamports: number;
+  usdcBaseUnits: bigint;
+} {
+  const pumpNativeLamports = pumpNativeLamportsForRewards(source);
+  const accumulatorCloseLamports = accumulatorCloseLamportsForRewards(source);
+  const totalLamports = totalLamportsForRewards(source);
+  const nonPumpLamports = Math.max(
+    0,
+    totalLamports - pumpNativeLamports - accumulatorCloseLamports,
+  );
+  const pumpNativeFeeLamports = Math.min(
+    Math.floor((pumpNativeLamports * PUMP_REWARDS_FEE_BPS) / 10_000),
+    Number(PUMP_REWARDS_FEE_CAP_LAMPORTS),
+  );
+  const accumulatorCloseFeeLamports = Math.floor(
+    (accumulatorCloseLamports * 500) / 10_000,
+  );
+  const nonPumpFeeLamports = Math.floor(
+    (nonPumpLamports * REWARDS_FEE_BPS) / 10_000,
+  );
+
+  const usdcTotalBaseUnits = BigInt(
+    Math.max(0, Math.trunc(source.usdcRewards?.totalBaseUnits ?? 0)),
+  );
+  const usdcFeeBaseUnits =
+    (usdcTotalBaseUnits * BigInt(PUMP_REWARDS_FEE_BPS)) / 10_000n;
+
+  return {
+    nativeLamports:
+      pumpNativeFeeLamports +
+      accumulatorCloseFeeLamports +
+      nonPumpFeeLamports,
+    usdcBaseUnits:
+      usdcFeeBaseUnits > PUMP_REWARDS_USDC_FEE_CAP_BASE_UNITS
+        ? PUMP_REWARDS_USDC_FEE_CAP_BASE_UNITS
+        : usdcFeeBaseUnits,
+  };
+}
 
 // ---- Tool Definition ----
 
@@ -39,7 +112,7 @@ export function getClaimRewardsToolDefinition(keypairWallet?: string) {
     name: 'claim_rewards',
     description:
       'Claim uncollected DeFi rewards (cashback, creator fees, and more) for a Solana wallet. ' +
-      'Signs and broadcasts locally (15% fee). ' +
+      'Signs and broadcasts locally (Pump/PumpSwap 3% capped at 1 SOL or 100 USDC; other rewards 15%). ' +
       'Call with dry_run (default) first, then with execution_token to execute.',
     inputSchema: {
       type: 'object' as const,
@@ -118,10 +191,20 @@ export async function handleClaimRewards(
         `  PumpSwap cashback: ${formatSolFromLamports(s.pumpSwapCashback)}\n` +
         `  Pump creator fees: ${formatSolFromLamports(s.pumpCreatorFee)}\n` +
         `  PumpSwap creator fees: ${formatSolFromLamports(s.pumpSwapCreatorFee)}\n` +
+        `  Raydium LaunchLab creator fees: ${formatSolFromLamports(s.raydiumLaunchLabCreatorFee)}\n` +
+        `  Raydium CPMM creator fees: ${formatSolFromLamports(s.raydiumCpmmCreatorFee)}\n` +
+        `  Meteora DBC creator fees: ${formatSolFromLamports(s.meteoraDbcCreatorFee)}\n` +
         `  Total: ${formatSolFromLamports(s.totalLamports)}\n` +
-        `  Fee (15%): ${formatSolFromLamports(s.estimatedFeeLamports)}\n` +
+        `  Estimated service fee: ${formatSolFromLamports(s.estimatedFeeLamports)}\n` +
         `  Estimated net: ${formatSolFromLamports(s.estimatedNetLamports)}\n` +
         `  Transactions: ${buildTxResp.transactions.length}`;
+
+      if (s.usdcRewards && s.usdcRewards.totalBaseUnits > 0) {
+        text +=
+          `\n  USDC rewards: ${(s.usdcRewards.totalBaseUnits / 1_000_000).toFixed(6)} USDC` +
+          `\n  Estimated USDC service fee: ${(s.usdcRewards.estimatedServiceFeeBaseUnits / 1_000_000).toFixed(6)} USDC` +
+          `\n  Estimated USDC net: ${(s.usdcRewards.estimatedNetBaseUnits / 1_000_000).toFixed(6)} USDC`;
+      }
 
       text +=
         `\n\nExecution token: ${token}\n` +
@@ -160,6 +243,18 @@ export async function handleClaimRewards(
       independentScan.total,
       buildTxResponse.rewardsSummary.totalLamports,
     );
+    const independentFeeCaps = calculateRewardsFeeCaps(independentScan);
+    const buildFeeCaps = calculateRewardsFeeCaps(
+      buildTxResponse.rewardsSummary,
+    );
+    const explicitMaxFeeLamports = Math.min(
+      independentFeeCaps.nativeLamports,
+      buildFeeCaps.nativeLamports,
+    );
+    const explicitMaxUsdcFeeBaseUnits =
+      independentFeeCaps.usdcBaseUnits < buildFeeCaps.usdcBaseUnits
+        ? independentFeeCaps.usdcBaseUnits
+        : buildFeeCaps.usdcBaseUnits;
 
     // Pre-sign validation
     validateTransactionPrograms(
@@ -167,6 +262,8 @@ export async function handleClaimRewards(
       walletPubkey,
       REWARDS_FEE_BPS,
       feeBasis,
+      explicitMaxFeeLamports,
+      explicitMaxUsdcFeeBaseUnits,
     );
 
     // Balance snapshot (pre)

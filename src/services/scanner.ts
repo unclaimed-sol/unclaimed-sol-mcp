@@ -73,8 +73,14 @@ export interface RewardsScanResponse {
   pumpSwapCashback: number; // lamports
   pumpCreatorFee: number; // lamports
   pumpSwapCreatorFee: number; // lamports
+  raydiumLaunchLabCreatorFee: number; // lamports
+  raydiumCpmmCreatorFee: number; // lamports
+  meteoraDbcCreatorFee: number; // lamports
+  pumpAccumulatorCloseLamports: number; // lamports
+  pumpSwapAccumulatorCloseLamports: number; // lamports
   total: number; // lamports
   isLikelyProfitable: boolean;
+  usdcRewards?: RewardsUsdcSummary;
 }
 
 /** Raw shape from backend — amounts are stringified BigInts. */
@@ -83,8 +89,28 @@ interface RawRewardsScanResponse {
   pumpSwapCashback: string;
   pumpCreatorFee: string;
   pumpSwapCreatorFee: string;
+  raydiumLaunchLabCreatorFee?: string;
+  raydiumCpmmCreatorFee?: string;
+  meteoraDbcCreatorFee?: string;
+  pumpAccumulatorCloseLamports?: string;
+  pumpSwapAccumulatorCloseLamports?: string;
   total: string;
   isLikelyProfitable: boolean;
+  usdcRewards?: RawRewardsUsdcSummary;
+}
+
+export interface RewardsUsdcSummary {
+  totalBaseUnits: number;
+  estimatedServiceFeeBaseUnits: number;
+  estimatedNetBaseUnits: number;
+}
+
+interface RawRewardsUsdcSummary {
+  totalBaseUnits?: string;
+  serviceFeeBaseUnits?: string;
+  estimatedServiceFeeBaseUnits?: string;
+  netBaseUnits?: string;
+  estimatedNetBaseUnits?: string;
 }
 
 /**
@@ -97,9 +123,15 @@ export interface RewardsBuildTxResponse {
     pumpSwapCashback: number;
     pumpCreatorFee: number;
     pumpSwapCreatorFee: number;
+    raydiumLaunchLabCreatorFee: number;
+    raydiumCpmmCreatorFee: number;
+    meteoraDbcCreatorFee: number;
+    pumpAccumulatorCloseLamports: number;
+    pumpSwapAccumulatorCloseLamports: number;
     totalLamports: number;
     estimatedFeeLamports: number;
     estimatedNetLamports: number;
+    usdcRewards?: RewardsUsdcSummary;
   };
 }
 
@@ -115,6 +147,26 @@ export interface StakesBuildTxResponse {
 }
 
 const REQUEST_TIMEOUT_MS = 15_000;
+
+function numberFromString(value: string | number | undefined): number {
+  return Number(value ?? 0);
+}
+
+function normalizeUsdcSummary(
+  raw: RawRewardsUsdcSummary | undefined,
+): RewardsUsdcSummary | undefined {
+  if (!raw?.totalBaseUnits) return undefined;
+
+  return {
+    totalBaseUnits: numberFromString(raw.totalBaseUnits),
+    estimatedServiceFeeBaseUnits: numberFromString(
+      raw.estimatedServiceFeeBaseUnits ?? raw.serviceFeeBaseUnits,
+    ),
+    estimatedNetBaseUnits: numberFromString(
+      raw.estimatedNetBaseUnits ?? raw.netBaseUnits,
+    ),
+  };
+}
 
 export class ScannerService {
   private config: Config;
@@ -286,13 +338,26 @@ export class ScannerService {
 
     // Backend sends amount fields as stringified BigInts — normalize to numbers.
     const raw: RawRewardsScanResponse = await response.json();
+    const usdcRewards = normalizeUsdcSummary(raw.usdcRewards);
     return {
-      pumpCashback: Number(raw.pumpCashback),
-      pumpSwapCashback: Number(raw.pumpSwapCashback),
-      pumpCreatorFee: Number(raw.pumpCreatorFee),
-      pumpSwapCreatorFee: Number(raw.pumpSwapCreatorFee),
-      total: Number(raw.total),
+      pumpCashback: numberFromString(raw.pumpCashback),
+      pumpSwapCashback: numberFromString(raw.pumpSwapCashback),
+      pumpCreatorFee: numberFromString(raw.pumpCreatorFee),
+      pumpSwapCreatorFee: numberFromString(raw.pumpSwapCreatorFee),
+      raydiumLaunchLabCreatorFee: numberFromString(
+        raw.raydiumLaunchLabCreatorFee,
+      ),
+      raydiumCpmmCreatorFee: numberFromString(raw.raydiumCpmmCreatorFee),
+      meteoraDbcCreatorFee: numberFromString(raw.meteoraDbcCreatorFee),
+      pumpAccumulatorCloseLamports: numberFromString(
+        raw.pumpAccumulatorCloseLamports,
+      ),
+      pumpSwapAccumulatorCloseLamports: numberFromString(
+        raw.pumpSwapAccumulatorCloseLamports,
+      ),
+      total: numberFromString(raw.total),
       isLikelyProfitable: raw.isLikelyProfitable,
+      ...(usdcRewards ? { usdcRewards } : {}),
     };
   }
 
@@ -323,17 +388,34 @@ export class ScannerService {
     // Backend sends rewardsSummary values as strings (BigInt.toString()).
     // Normalize to numbers so the rest of the codebase can use them directly.
     const raw = await response.json();
-    const s = raw.rewardsSummary;
+    const s = raw.builtSummary ?? raw.rewardsSummary;
+    const usdcRewards = normalizeUsdcSummary(s.usdcRewards);
     return {
       transactions: raw.transactions,
       rewardsSummary: {
-        pumpCashback: Number(s.pumpCashback),
-        pumpSwapCashback: Number(s.pumpSwapCashback),
-        pumpCreatorFee: Number(s.pumpCreatorFee),
-        pumpSwapCreatorFee: Number(s.pumpSwapCreatorFee),
-        totalLamports: Number(s.totalLamports),
-        estimatedFeeLamports: Number(s.estimatedFeeLamports),
-        estimatedNetLamports: Number(s.estimatedNetLamports),
+        pumpCashback: numberFromString(s.pumpCashback),
+        pumpSwapCashback: numberFromString(s.pumpSwapCashback),
+        pumpCreatorFee: numberFromString(s.pumpCreatorFee),
+        pumpSwapCreatorFee: numberFromString(s.pumpSwapCreatorFee),
+        raydiumLaunchLabCreatorFee: numberFromString(
+          s.raydiumLaunchLabCreatorFee,
+        ),
+        raydiumCpmmCreatorFee: numberFromString(s.raydiumCpmmCreatorFee),
+        meteoraDbcCreatorFee: numberFromString(s.meteoraDbcCreatorFee),
+        pumpAccumulatorCloseLamports: numberFromString(
+          s.pumpAccumulatorCloseLamports,
+        ),
+        pumpSwapAccumulatorCloseLamports: numberFromString(
+          s.pumpSwapAccumulatorCloseLamports,
+        ),
+        totalLamports: numberFromString(s.totalLamports),
+        estimatedFeeLamports: numberFromString(
+          s.estimatedFeeLamports ?? s.serviceFeeLamports,
+        ),
+        estimatedNetLamports: numberFromString(
+          s.estimatedNetLamports ?? s.netLamports,
+        ),
+        ...(usdcRewards ? { usdcRewards } : {}),
       },
     };
   }

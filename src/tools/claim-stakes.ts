@@ -39,7 +39,7 @@ export function getClaimStakesToolDefinition(keypairWallet?: string) {
     name: 'claim_stakes',
     description:
       'Claim SOL from deactivated stake accounts. ' +
-      'Signs and broadcasts locally via UnclaimedSOL on-chain program (fee applies). ' +
+      'Signs and broadcasts locally via UnclaimedSOL on-chain program (3% fee). ' +
       'Call with dry_run (default) first, then with execution_token to execute.',
     inputSchema: {
       type: 'object' as const,

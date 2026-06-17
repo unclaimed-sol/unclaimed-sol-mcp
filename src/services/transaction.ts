@@ -38,7 +38,7 @@ export interface ClaimPlan {
   selectedBufferPubkeys: string[];
   totalTokenAccountCount: number;
   totalBufferAccountCount: number;
-  estimatedSol: number; // Net amount — 5% fee is already included
+  estimatedSol: number; // Net amount — token net-floor / buffer fee already included
   transactionsNeeded: number;
   totalTransactionsNeeded: number;
   transactions: Transaction[];
@@ -173,7 +173,7 @@ export class TransactionBuilder {
     }
 
     // ---- ESTIMATE SOL (only for accounts covered by used transactions) ----
-    // API returns amounts with the 5% fee already included, so no deduction needed.
+    // API returns net amounts with token net-floor / buffer fees already included.
     const usedMeta = usedGroups.flat();
     const coveredTokenCount = usedMeta.reduce((s, m) => s + m.tokenCount, 0);
     const coveredBufferCount = usedMeta.reduce((s, m) => s + m.bufferCount, 0);
@@ -323,6 +323,9 @@ export const PUMPSWAP_COLLECT_COIN_CREATOR_FEE = Buffer.from([160, 57, 89, 42, 1
 export const NATIVE_MINT = new PublicKey(
   'So11111111111111111111111111111111111111112',
 );
+export const USDC_MINT = new PublicKey(
+  'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+);
 export const ATA_PROGRAM_ID = new PublicKey(
   'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL',
 );
@@ -377,12 +380,17 @@ const SPL_TOKEN = SPL_TOKEN_PROGRAM_ID.toBase58();
  * @param backendReportedTotalLamports  Fallback for rewards fee cap (claim
  *   amounts are on-chain, not in instruction data). For stakes the fee cap
  *   is derived from proven withdraw amounts in instruction data.
+ * @param explicitMaxFeeLamports  Optional caller-derived fee ceiling. Rewards
+ *   use this to enforce blended/capped pricing instead of a single rate.
+ * @param explicitMaxUsdcFeeBaseUnits  Optional caller-derived USDC fee ceiling.
  */
 export function validateTransactionPrograms(
   transactions: Transaction[],
   walletPubkey: PublicKey,
   feeBps: number,
   backendReportedTotalLamports: number,
+  explicitMaxFeeLamports?: number,
+  explicitMaxUsdcFeeBaseUnits?: bigint,
 ): void {
   const feeVaultKey = new PublicKey(FEE_VAULT);
   const MAX_COMPUTE_UNITS = 1_400_000;
@@ -395,6 +403,7 @@ export function validateTransactionPrograms(
 
     // Per-transaction accumulators.
     let txFeeLamports = 0;
+    let txFeeUsdcBaseUnits = 0n;
     let txStakeWithdrawLamports = 0;
     let txHasClaim = false;
 
@@ -447,7 +456,12 @@ export function validateTransactionPrograms(
 
       // ---- SPL Token ----
       if (pid === SPL_TOKEN) {
-        validateSplTokenCloseAccount(ix, walletPubkey, label);
+        txFeeUsdcBaseUnits += validateSplTokenInstruction(
+          ix,
+          walletPubkey,
+          pdas,
+          label,
+        );
       }
     }
 
@@ -465,12 +479,31 @@ export function validateTransactionPrograms(
     const claimTotal = txStakeWithdrawLamports > 0
       ? txStakeWithdrawLamports
       : backendReportedTotalLamports / transactions.length;
-    const maxFee = Math.floor(claimTotal * feeBps / 10_000);
+    const maxFee =
+      txStakeWithdrawLamports > 0 || explicitMaxFeeLamports === undefined
+        ? Math.floor(claimTotal * feeBps / 10_000)
+        : Math.floor(explicitMaxFeeLamports / transactions.length);
 
     if (txFeeLamports > maxFee) {
       throw new TransactionValidationError(
         `${label}: fee ${txFeeLamports} lamports exceeds max ${maxFee}`,
       );
+    }
+
+    if (txFeeUsdcBaseUnits > 0n) {
+      if (explicitMaxUsdcFeeBaseUnits === undefined) {
+        throw new TransactionValidationError(
+          `${label}: unexpected USDC fee transfer`,
+        );
+      }
+      const maxUsdcFee =
+        (explicitMaxUsdcFeeBaseUnits + BigInt(transactions.length - 1)) /
+        BigInt(transactions.length);
+      if (txFeeUsdcBaseUnits > maxUsdcFee) {
+        throw new TransactionValidationError(
+          `${label}: USDC fee ${txFeeUsdcBaseUnits.toString()} base units exceeds max ${maxUsdcFee.toString()}`,
+        );
+      }
     }
   }
 }
@@ -488,6 +521,8 @@ interface WalletPdas {
   pumpSwapCreatorVaultAuthority: PublicKey;
   pumpSwapEventAuthority: PublicKey;
   userWsolAta: PublicKey;
+  userUsdcAta: PublicKey;
+  feeVaultUsdcAta: PublicKey;
   pumpSwapAccumulatorWsolAta: PublicKey;
   pumpSwapCreatorVaultAta: PublicKey;
   allowedAtaOwners: Set<string>;
@@ -520,7 +555,10 @@ function deriveExpectedPdas(wallet: PublicKey): WalletPdas {
     PUMP_AMM_PROGRAM_ID,
   );
 
+  const feeVault = new PublicKey(FEE_VAULT);
   const userWsolAta = deriveAta(wallet);
+  const userUsdcAta = deriveAta(wallet, USDC_MINT);
+  const feeVaultUsdcAta = deriveAta(feeVault, USDC_MINT);
   const pumpSwapAccumulatorWsolAta = deriveAta(pumpSwapAccumulator);
   const pumpSwapCreatorVaultAta = deriveAta(pumpSwapCreatorVaultAuthority);
 
@@ -532,6 +570,8 @@ function deriveExpectedPdas(wallet: PublicKey): WalletPdas {
     pumpSwapCreatorVaultAuthority,
     pumpSwapEventAuthority,
     userWsolAta,
+    userUsdcAta,
+    feeVaultUsdcAta,
     pumpSwapAccumulatorWsolAta,
     pumpSwapCreatorVaultAta,
     allowedAtaOwners: new Set([
@@ -552,9 +592,12 @@ export function derivePda(
   return pda;
 }
 
-export function deriveAta(owner: PublicKey): PublicKey {
+export function deriveAta(
+  owner: PublicKey,
+  mint: PublicKey = NATIVE_MINT,
+): PublicKey {
   const [ata] = PublicKey.findProgramAddressSync(
-    [owner.toBuffer(), SPL_TOKEN_PROGRAM_ID.toBuffer(), NATIVE_MINT.toBuffer()],
+    [owner.toBuffer(), SPL_TOKEN_PROGRAM_ID.toBuffer(), mint.toBuffer()],
     ATA_PROGRAM_ID,
   );
   return ata;
@@ -643,18 +686,31 @@ function validateAtaCreate(
       `${label}: ATA instruction is not CreateIdempotent`,
     );
   }
-  requireKey(ix, 0, wallet, 'ATA funder', label);
-  requireKey(ix, 3, NATIVE_MINT, 'ATA mint', label);
   requireKey(ix, 4, SystemProgram.programId, 'ATA System Program', label);
   requireKey(ix, 5, SPL_TOKEN_PROGRAM_ID, 'ATA token program', label);
 
+  requireKey(ix, 0, wallet, 'ATA funder', label);
   const owner = ix.keys[2].pubkey;
-  if (!pdas.allowedAtaOwners.has(owner.toBase58())) {
-    throw new TransactionValidationError(
-      `${label}: ATA owner is not wallet or PumpSwap creator-vault PDA`,
-    );
+  const mint = ix.keys[3].pubkey;
+  if (mint.equals(NATIVE_MINT)) {
+    if (!pdas.allowedAtaOwners.has(owner.toBase58())) {
+      throw new TransactionValidationError(
+        `${label}: ATA owner is not wallet or PumpSwap creator-vault PDA`,
+      );
+    }
+    requireKey(ix, 1, deriveAta(owner), 'ATA address', label);
+    return;
   }
-  requireKey(ix, 1, deriveAta(owner), 'ATA address', label);
+
+  if (mint.equals(USDC_MINT)) {
+    requireKey(ix, 2, wallet, 'USDC ATA owner', label);
+    requireKey(ix, 1, pdas.userUsdcAta, 'USDC ATA address', label);
+    return;
+  }
+
+  throw new TransactionValidationError(
+    `${label}: ATA mint mismatch; expected WSOL or USDC`,
+  );
 }
 
 function validateComputeBudget(
@@ -795,23 +851,52 @@ function validatePumpSwapIx(
   }
 }
 
-function validateSplTokenCloseAccount(
+function validateSplTokenInstruction(
   ix: TransactionInstruction,
   wallet: PublicKey,
+  pdas: WalletPdas,
   label: string,
-): void {
-  if (ix.data.length < 1 || ix.data[0] !== 9) {
+): bigint {
+  if (ix.data.length < 1) {
     throw new TransactionValidationError(
-      `${label}: SPL Token instruction is not CloseAccount (disc=${ix.data.length > 0 ? ix.data[0] : 'empty'})`,
+      `${label}: SPL Token instruction data empty`,
     );
   }
-  if (ix.keys.length !== 3) {
+
+  if (ix.data[0] === 9) {
+    if (ix.keys.length !== 3) {
+      throw new TransactionValidationError(
+        `${label}: SPL Token CloseAccount expected 3 accounts, got ${ix.keys.length}`,
+      );
+    }
+    requireKey(ix, 1, wallet, 'SPL Token CloseAccount destination', label);
+    requireKey(ix, 2, wallet, 'SPL Token CloseAccount authority', label);
+    return 0n;
+  }
+
+  if (ix.data[0] !== 12) {
     throw new TransactionValidationError(
-      `${label}: SPL Token CloseAccount expected 3 accounts, got ${ix.keys.length}`,
+      `${label}: SPL Token instruction is not CloseAccount or TransferChecked (disc=${ix.data[0]})`,
     );
   }
-  requireKey(ix, 1, wallet, 'SPL Token CloseAccount destination', label);
-  requireKey(ix, 2, wallet, 'SPL Token CloseAccount authority', label);
+
+  if (ix.data.length < 10) {
+    throw new TransactionValidationError(
+      `${label}: SPL Token TransferChecked data too short`,
+    );
+  }
+  if (ix.keys.length !== 4) {
+    throw new TransactionValidationError(
+      `${label}: SPL Token TransferChecked expected 4 accounts, got ${ix.keys.length}`,
+    );
+  }
+
+  requireKey(ix, 0, pdas.userUsdcAta, 'USDC fee source', label);
+  requireKey(ix, 1, USDC_MINT, 'USDC fee mint', label);
+  requireKey(ix, 2, pdas.feeVaultUsdcAta, 'USDC fee destination', label);
+  requireKey(ix, 3, wallet, 'USDC fee owner', label);
+
+  return ix.data.readBigUInt64LE(1);
 }
 
 export class TransactionValidationError extends Error {

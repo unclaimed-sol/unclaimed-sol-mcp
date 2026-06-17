@@ -18,9 +18,9 @@ See also:
 Solana wallets accumulate rent-locked SOL in dormant token accounts (zero-balance ATAs) and program buffer accounts. This MCP server lets AI assistants:
 
 - **Scan** any wallet to check for reclaimable SOL
-- **Claim** (Vibe Claiming) — burn worthless token balances, close dormant accounts, and reclaim the rent SOL. Signs and broadcasts transactions locally via the UnclaimedSOL on-chain program. A 5% service fee applies.
-- **Claim rewards** — claim uncollected DeFi rewards (cashback, creator fees, etc.). 15% fee.
-- **Claim stakes** — claim SOL from deactivated stake accounts. 10% fee.
+- **Claim** (Vibe Claiming) — burn worthless token balances, close dormant accounts, and reclaim the rent SOL. Signs and broadcasts transactions locally via the UnclaimedSOL on-chain program. Token cleanup lets users keep up to 0.002 SOL per closed account; buffers use a 5% fee.
+- **Claim rewards** — claim uncollected DeFi rewards (cashback, creator fees, etc.). Pump/PumpSwap are 3% capped at 1 SOL or 100 USDC; other rewards are 15%.
+- **Claim stakes** — claim SOL from deactivated stake accounts. 3% fee.
 
 ## Tools
 
@@ -43,7 +43,7 @@ This action is irreversible — closed accounts cannot be recovered.
 
 ### `claim_rewards`
 
-Claim uncollected DeFi rewards (cashback, creator fees, and more). Requires a configured keypair. Uses the same two-step dry-run/execute flow as `claim_sol`. A 15% service fee applies.
+Claim uncollected DeFi rewards (cashback, creator fees, and more). Requires a configured keypair. Uses the same two-step dry-run/execute flow as `claim_sol`. Pump/PumpSwap are 3% capped at 1 SOL or 100 USDC; other rewards are 15%.
 
 **Inputs:** `wallet_address` (optional in claim-enabled mode, defaults to configured keypair wallet), `dry_run` (default true), `execution_token`
 
@@ -239,18 +239,18 @@ Using local build:
 1. The MCP server calls the UnclaimedSOL backend to fetch reclaimable token and buffer accounts.
 2. Instructions are built using the [`@unclaimedsol/spl-burn-close-sdk`](https://www.npmjs.com/package/@unclaimedsol/spl-burn-close-sdk) — token balances are burned and accounts are closed via the UnclaimedSOL on-chain program.
 3. Transactions are signed locally with your keypair and broadcast to the Solana network.
-4. A 5% service fee is collected on-chain by the program. No funds pass through the MCP server.
+4. The on-chain program collects recovered token-account rent above 0.002 SOL per successfully closed account, plus 5% for buffers. No funds pass through the MCP server.
 
 ### Rewards claims (`claim_rewards`)
 
 1. The backend builds unsigned transactions containing DeFi reward claim instructions and a fee transfer.
-2. The MCP validates every instruction: exact account layouts, discriminators, and locally-derived PDAs. Fee is capped at 15% of an independently-scanned reward total.
+2. The MCP validates every instruction: exact account layouts, discriminators, and locally-derived PDAs. Fee is capped at 15% of an independently-scanned reward total, while Pump/PumpSwap pricing is expected to be lower.
 3. Transactions are signed locally and broadcast.
 
 ### Stake claims (`claim_stakes`)
 
 1. The backend builds unsigned transactions containing Stake Withdraw instructions and a fee transfer.
-2. The MCP validates every instruction: withdraw-only, exact account counts, and fee capped at 10% of proven withdraw amounts extracted from instruction data.
+2. The MCP validates every instruction: withdraw-only, exact account counts, and fee capped at 3% of proven withdraw amounts extracted from instruction data.
 3. Transactions are signed locally and broadcast.
 
 ## Validator trust model

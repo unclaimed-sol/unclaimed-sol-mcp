@@ -204,7 +204,8 @@ export function getClaimToolDefinition(keypairWallet?: string) {
       'Claim reclaimable SOL from dormant token and buffer accounts. ' +
       'Burns worthless token balances and closes accounts to reclaim rent. ' +
       'This action is irreversible — closed accounts cannot be recovered. ' +
-      'Signs and broadcasts locally via UnclaimedSOL on-chain program (5% fee). ' +
+      'Signs and broadcasts locally via UnclaimedSOL on-chain program. ' +
+      'Token cleanup lets the user keep up to 0.002 SOL per closed account; buffers use a 5% fee. ' +
       'Stake account claims are at unclaimedsol.com. ' +
       'Call with dry_run (default) first, then with execution_token to execute.',
     inputSchema: {
@@ -344,7 +345,7 @@ export async function handleClaim(
         `Dry run — no transactions sent.\n\n` +
         `Estimated claim: ${formatSol(plan.estimatedSol)} from ` +
         `${plan.tokenAccountCount} token accounts and ${plan.bufferAccountCount} buffer accounts ` +
-        `(inclusive of 5% fee).\n` +
+        `(token cleanup uses a 0.002 SOL user-net rule; buffers use a 5% fee).\n` +
         `Transactions needed: ${plan.transactionsNeeded}` +
         (plan.cappedByMaxTx
           ? ` of ${plan.totalTransactionsNeeded} (limited by max_transactions: ${max_transactions}` +

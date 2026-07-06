@@ -114,6 +114,13 @@ export function getClaimRewardsToolDefinition(keypairWallet?: string) {
       'Claim uncollected DeFi rewards (cashback, creator fees, and more) for a Solana wallet. ' +
       'Signs and broadcasts locally (Pump/PumpSwap 3% capped at 1 SOL or 100 USDC; other rewards 15%). ' +
       'Call with dry_run (default) first, then with execution_token to execute.',
+    annotations: {
+      title: 'Claim DeFi Rewards',
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object' as const,
       properties: {

@@ -28,9 +28,13 @@ export function getScanToolDefinition(keypairWallet?: string) {
   return {
     name: 'scan_claimable_sol',
     description:
-      'Check how much SOL a Solana wallet can reclaim from dormant accounts. ' +
-      'Returns total claimable amount. To claim, visit unclaimedsol.com or ' +
-      'configure a local keypair for Vibe Claiming.',
+      'Scan a Solana wallet for SOL locked in dormant token accounts (incl. Token-2022) and program buffer accounts. Read-only — no transactions, no keypair needed. DeFi rewards and deactivated stakes are discovered via the claim_rewards and claim_stakes dry runs. To claim, enable Vibe Claiming (SOLANA_KEYPAIR_PATH) or visit unclaimedsol.com.',
+    annotations: {
+      title: 'Scan Wallet for Claimable SOL',
+      readOnlyHint: true,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object' as const,
       properties: {

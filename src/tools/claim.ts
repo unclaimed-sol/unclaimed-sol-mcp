@@ -206,8 +206,15 @@ export function getClaimToolDefinition(keypairWallet?: string) {
       'This action is irreversible — closed accounts cannot be recovered. ' +
       'Signs and broadcasts locally via UnclaimedSOL on-chain program. ' +
       'Token cleanup lets the user keep up to 0.002 SOL per closed account; buffers use a 5% fee. ' +
-      'Stake account claims are at unclaimedsol.com. ' +
+      'For deactivated stakes use claim_stakes; for DeFi rewards use claim_rewards. ' +
       'Call with dry_run (default) first, then with execution_token to execute.',
+    annotations: {
+      title: 'Claim Dormant SOL (Vibe Claiming)',
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object' as const,
       properties: {

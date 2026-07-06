@@ -41,6 +41,13 @@ export function getClaimStakesToolDefinition(keypairWallet?: string) {
       'Claim SOL from deactivated stake accounts. ' +
       'Signs and broadcasts locally via UnclaimedSOL on-chain program (3% fee). ' +
       'Call with dry_run (default) first, then with execution_token to execute.',
+    annotations: {
+      title: 'Claim Deactivated Stakes',
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object' as const,
       properties: {

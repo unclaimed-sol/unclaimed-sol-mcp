@@ -1,7 +1,0 @@
-[
-  {
-    "name": "reclaim-sol",
-    "description": "Scan and reclaim dormant SOL on Solana using Unclaimed SOL MCP.",
-    "url": "https://github.com/unclaimed-sol/unclaimed-sol-mcp#readme"
-  }
-]

@@ -1,8 +1,7 @@
 # Changelog
 
-## Unreleased
+## 1.3.0 - 2026-07-06
 
-- Prepare a 1.3.0 version bump for the next publish.
 - Add MCP tool annotations for scan, token/buffer claims, DeFi rewards, and deactivated stake claims.
 - Report the real package version at server startup instead of the stale hardcoded 1.0.0 value.
 - Clarify tool descriptions for scan coverage and claim routing.

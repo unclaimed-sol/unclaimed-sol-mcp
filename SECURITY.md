@@ -15,6 +15,7 @@ The main security boundary is: **transactions are validated locally before signi
 ### Core guarantees
 
 - **Local key custody**: key material is loaded from `SOLANA_KEYPAIR_PATH` or `SOLANA_PRIVATE_KEY` and used only for local signing.
+- **No seed phrases**: this server never asks for or accepts a seed phrase/mnemonic. It loads a standard Solana keypair file (`SOLANA_KEYPAIR_PATH`, recommended) or a private key environment variable, and signs locally.
 - **No blind signing**: every transaction is validated before signing.
 - **Two-step execution for claims**: `dry_run -> execution_token -> execute`.
 - **Short-lived, single-wallet execution tokens**: 60s TTL, one active token per wallet, single-use on success.

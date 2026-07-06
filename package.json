@@ -1,12 +1,12 @@
 {
   "name": "@unclaimed-sol/mcp",
-  "version": "1.2.5",
+  "version": "1.3.0",
   "mcpName": "io.github.nedim1511/unclaimed-sol",
   "repository": {
     "type": "git",
     "url": "https://github.com/unclaimed-sol/unclaimed-sol-mcp"
   },
-  "description": "Scan and reclaim dormant SOL from your Solana wallet. Powered by UnclaimedSOL.",
+  "description": "The first Vibe Claiming MCP server: let AI agents scan and reclaim dormant SOL on Solana — rent from token accounts and spam NFTs, program buffers, deactivated stakes, and DeFi rewards. Dry-run + execution-token safety, local signing, keypair never leaves your machine.",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
@@ -20,6 +20,34 @@
   },
   "files": [
     "dist"
+  ],
+  "homepage": "https://unclaimedsol.com",
+  "bugs": {
+    "url": "https://github.com/unclaimed-sol/unclaimed-sol-mcp/issues"
+  },
+  "author": "UnclaimedSOL (https://unclaimedsol.com)",
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "solana",
+    "sol",
+    "web3",
+    "ai-agent",
+    "agent",
+    "agent-tools",
+    "claude",
+    "claude-code",
+    "cursor",
+    "solana-rent",
+    "rent-reclaim",
+    "reclaim-sol",
+    "close-token-accounts",
+    "stake-accounts",
+    "defi-rewards",
+    "wallet-cleanup",
+    "vibe-claiming",
+    "unclaimed-sol"
   ],
   "license": "MIT",
   "dependencies": {

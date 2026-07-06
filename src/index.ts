@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { createRequire } from 'node:module';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -21,6 +22,10 @@ import {
   handleClaimStakes,
 } from './tools/claim-stakes.js';
 
+const pkg = createRequire(import.meta.url)('../package.json') as {
+  version: string;
+};
+
 async function main() {
   const config = loadConfig();
   const scanner = new ScannerService(config);
@@ -30,7 +35,7 @@ async function main() {
   const signer = config.claimEnabled ? new SignerService(config) : null;
 
   const server = new Server(
-    { name: 'unclaimed-sol-mcp', version: '1.0.0' },
+    { name: 'unclaimed-sol-mcp', version: pkg.version },
     { capabilities: { tools: {} } },
   );
 
@@ -88,7 +93,7 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
 
-  console.error('unclaimed-sol-mcp v1.0.0');
+  console.error(`unclaimed-sol-mcp v${pkg.version}`);
   console.error(`  API: ${config.apiUrl}`);
   console.error(`  RPC: ${config.rpcUrl}`);
   console.error(

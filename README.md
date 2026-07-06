@@ -1,36 +1,81 @@
-# @unclaimed-sol/mcp
+# Unclaimed SOL MCP
+
+**The first Vibe Claiming MCP server — let your AI agent scan and reclaim dormant SOL on Solana.**
 
 [![npm version](https://img.shields.io/npm/v/%40unclaimed-sol%2Fmcp)](https://www.npmjs.com/package/@unclaimed-sol/mcp)
 [![npm downloads](https://img.shields.io/npm/dm/%40unclaimed-sol%2Fmcp)](https://www.npmjs.com/package/@unclaimed-sol/mcp)
 [![Node >=18](https://img.shields.io/badge/node-%3E%3D18-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+[![CI](https://github.com/unclaimed-sol/unclaimed-sol-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/unclaimed-sol/unclaimed-sol-mcp/actions/workflows/ci.yml)
 
-MCP server for [UnclaimedSOL](https://unclaimedsol.com) — scan and reclaim dormant SOL from Solana wallets directly from AI assistants like Claude, ChatGPT, and others that support the [Model Context Protocol](https://modelcontextprotocol.io).
+Unclaimed SOL MCP — the first Vibe Claiming MCP server. One server, six reclaim categories: dormant token accounts (incl. Token-2022), spam NFTs, program buffers, deactivated stakes, DeFi rewards, and excess lamports. Read-only scanning with zero config; claiming with dry-run previews, 60-second single-use execution tokens, and local signing. Your keypair never leaves your machine. No seed phrases, ever.
+
+MCP server for [UnclaimedSOL](https://unclaimedsol.com) — works with AI agents and assistants (Claude, Cursor, Windsurf, Codex CLI, and any [Model Context Protocol](https://modelcontextprotocol.io) client).
 
 See also:
 
 - [Security model](./SECURITY.md)
+- [Changelog](./CHANGELOG.md)
 - [npm package](https://www.npmjs.com/package/@unclaimed-sol/mcp)
 - [UnclaimedSOL website](https://unclaimedsol.com)
 
+## Why agents use this
+
+- **Earn, don't just spend** — Solana agents pay network fees, but wallets can also hold reclaimable SOL in old accounts, buffers, stakes, and rewards.
+- **Safe by default** — read-only scan mode works with zero config; claiming requires a dry run and a 60-second single-use execution token.
+- **Local signing** — no seed phrases, program allowlist validation, and fee caps before transactions are signed.
+- **Agent-ready** — works in Claude Desktop/Code, Cursor, Windsurf, Codex CLI, and other MCP clients.
+
+## Coverage
+
+Coverage as of July 2026:
+
+| Capability | Typical token-account cleaners | Unclaimed SOL MCP |
+|---|---|---|
+| Dormant token accounts | Yes | Yes, including Token-2022 |
+| Spam NFTs | Sometimes | Yes |
+| Program buffers | Rare | Yes |
+| Deactivated stakes | Rare | Yes |
+| DeFi rewards | Rare | Yes |
+| Excess lamports | Rare | Yes |
+| Read-only scan mode zero config | Sometimes | Yes |
+| Keypair-file option | Sometimes | Yes, via `SOLANA_KEYPAIR_PATH` |
+
 ## What it does
 
-Solana wallets accumulate rent-locked SOL in dormant token accounts (zero-balance ATAs) and program buffer accounts. This MCP server lets AI assistants:
+Solana wallets accumulate rent-locked SOL in dormant token accounts (including Token-2022), spam NFTs, program buffer accounts, deactivated stakes, DeFi rewards, and excess lamports. This MCP server lets AI agents and assistants:
 
-- **Scan** any wallet to check for reclaimable SOL
+- **Scan** any wallet to check for reclaimable SOL in dormant token accounts and program buffers.
 - **Claim** (Vibe Claiming) — burn worthless token balances, close dormant accounts, and reclaim the rent SOL. Signs and broadcasts transactions locally via the UnclaimedSOL on-chain program. Token cleanup lets users keep up to 0.002 SOL per closed account; buffers use a 5% fee.
 - **Claim rewards** — claim uncollected DeFi rewards (cashback, creator fees, etc.). Pump/PumpSwap are 3% capped at 1 SOL or 100 USDC; other rewards are 15%.
 - **Claim stakes** — claim SOL from deactivated stake accounts. 3% fee.
+
+### Fees
+
+| Category | Fee |
+|---|---:|
+| Scanning | Free |
+| Token cleanup | User keeps up to 0.002 SOL per closed account |
+| Program buffers | 5% |
+| DeFi rewards | 15% general |
+| Pump/PumpSwap rewards | 3%, capped at 1 SOL / 100 USDC |
+| Deactivated stakes | 3% |
+
+No funds pass through the MCP server.
 
 ## Tools
 
 ### `scan_claimable_sol`
 
-Check how much SOL a wallet can reclaim. Read-only — no transactions, no keypair needed.
+**Annotation title:** Scan Wallet for Claimable SOL
+
+Scan a wallet for SOL locked in dormant token accounts (incl. Token-2022) and program buffer accounts. Read-only — no transactions, no keypair needed. DeFi rewards and deactivated stakes are discovered through the `claim_rewards` and `claim_stakes` dry runs.
 
 **Input:** `wallet_address` (base58 public key; optional in claim-enabled mode, defaults to configured keypair wallet)
 
 ### `claim_sol`
+
+**Annotation title:** Claim Dormant SOL (Vibe Claiming)
 
 Claim reclaimable SOL. Requires a configured keypair. Uses a two-step flow:
 
@@ -43,11 +88,15 @@ This action is irreversible — closed accounts cannot be recovered.
 
 ### `claim_rewards`
 
+**Annotation title:** Claim DeFi Rewards
+
 Claim uncollected DeFi rewards (cashback, creator fees, and more). Requires a configured keypair. Uses the same two-step dry-run/execute flow as `claim_sol`. Pump/PumpSwap are 3% capped at 1 SOL or 100 USDC; other rewards are 15%.
 
 **Inputs:** `wallet_address` (optional in claim-enabled mode, defaults to configured keypair wallet), `dry_run` (default true), `execution_token`
 
 ### `claim_stakes`
+
+**Annotation title:** Claim Deactivated Stakes
 
 Claim SOL from deactivated stake accounts. Requires a configured keypair. Uses the same two-step dry-run/execute flow. Optionally pass specific stake account addresses to claim.
 
@@ -63,6 +112,9 @@ Claim SOL from deactivated stake accounts. Requires a configured keypair. Uses t
 - "Claim my deactivated stakes"
 - "How much SOL can I reclaim from `<wallet_address>`?"
 - "Scan `<wallet_address>` for reclaimable SOL"
+- "Every morning, scan my wallet and tell me if there's more than 0.05 SOL to reclaim"
+- "Dry-run a full claim and show me the fee breakdown before executing"
+- "Claim everything except my BONK accounts"
 
 ## Setup
 

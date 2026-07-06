@@ -1,0 +1,34 @@
+{
+  "name": "io.github.nedim1511/unclaimed-sol",
+  "title": "Unclaimed SOL MCP",
+  "description": "AI agents scan and reclaim dormant SOL on Solana with local signing.",
+  "version": "1.2.5",
+  "vendor": "UnclaimedSOL",
+  "repository": "https://github.com/unclaimed-sol/unclaimed-sol-mcp",
+  "distribution": {
+    "registry": "npm",
+    "package": "@unclaimed-sol/mcp",
+    "command": "npx -y @unclaimed-sol/mcp"
+  },
+  "transport": {
+    "type": "stdio"
+  },
+  "tools": [
+    {
+      "name": "scan_claimable_sol",
+      "description": "Read-only scan for dormant token accounts and program buffers."
+    },
+    {
+      "name": "claim_sol",
+      "description": "Dry-run and claim dormant token accounts, spam NFTs, and program buffers."
+    },
+    {
+      "name": "claim_rewards",
+      "description": "Dry-run and claim DeFi rewards."
+    },
+    {
+      "name": "claim_stakes",
+      "description": "Dry-run and claim deactivated stake accounts."
+    }
+  ]
+}

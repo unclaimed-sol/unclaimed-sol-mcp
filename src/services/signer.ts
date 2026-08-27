@@ -12,6 +12,19 @@ export interface SendResult {
   error?: string;
 }
 
+function isBlockhashExpired(error: string | undefined): boolean {
+  if (!error) return false;
+
+  // RPC and web3.js surface the same expiry conditions with different
+  // spacing/casing (for example BlockhashNotFound and
+  // TransactionExpiredBlockheightExceededError).
+  const normalized = error.toLowerCase().replace(/[^a-z0-9]+/g, '');
+  return (
+    normalized.includes('blockhashnotfound') ||
+    normalized.includes('blockheightexceeded')
+  );
+}
+
 export class SignerService {
   private connection: Connection;
 
@@ -115,10 +128,7 @@ export class SignerService {
       // Find retryable failures (blockhash expired)
       pending = pending.filter((idx) => {
         const r = results[idx];
-        return (
-          r?.status === 'failed' &&
-          r.error?.toLowerCase().includes('blockhash')
-        );
+        return r?.status === 'failed' && isBlockhashExpired(r.error);
       });
     }
 

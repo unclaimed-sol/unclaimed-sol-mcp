@@ -3,3 +3,4 @@ dist/
 .env
 *.tgz
 .private-drafts/
+.mcpregistry_*_token

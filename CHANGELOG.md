@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.3.1 - YYYY-MM-DD
+## 1.3.1 - 2026-08-28
 
 - Recognize common Solana blockhash-expiry responses and rebuild/re-sign transactions with a fresh blockhash.
 - Keep unrelated errors and unknown-outcome confirmation timeouts non-retryable.

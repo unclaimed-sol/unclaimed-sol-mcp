@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.3.1 - YYYY-MM-DD
+
+- Recognize common Solana blockhash-expiry responses and rebuild/re-sign transactions with a fresh blockhash.
+- Keep unrelated errors and unknown-outcome confirmation timeouts non-retryable.
+
 ## 1.3.0 - 2026-07-06
 
 - Add MCP tool annotations for scan, token/buffer claims, DeFi rewards, and deactivated stake claims.

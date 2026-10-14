@@ -12,11 +12,7 @@ export const BPF_LOADER_UPGRADEABLE =
   'BPFLoaderUpgradeab1e11111111111111111111111';
 
 // API URL allowlist for claim mode
-export const API_URL_ALLOWLIST = [
-  'unclaimedsol.com',
-  'localhost',
-  '127.0.0.1',
-];
+export const API_URL_ALLOWLIST = ['unclaimedsol.com'];
 
 // Expected program IDs for pre-sign validation
 export const EXPECTED_PROGRAM_IDS = [
@@ -63,5 +59,5 @@ export const WEBSITE_URL = 'https://unclaimedsol.com';
 export const TOKEN_PAIRS_PER_IX = 12;
 
 // Buffer batching — how many buffers per close instruction.
-// Each buffer adds 1 writable account. Safe to batch ~25 per instruction.
-export const BUFFERS_PER_IX = 25;
+// Each buffer adds 1 writable account. Hard cap of 20, including space for compute-budget instructions.
+export const BUFFERS_PER_IX = 20;

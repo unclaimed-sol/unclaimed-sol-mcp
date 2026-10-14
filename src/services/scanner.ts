@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import { Config } from '../config.js';
 
 /**
@@ -19,6 +20,8 @@ export interface TokenAccountInfo {
   decimals?: number; // Token decimals
   programOwnerId: string; // SPL Token or Token-2022 program ID
   isNft?: boolean; // true when decimals=0
+  amountBaseUnits?: string; // Populated from the trusted RPC, never amountUi
+  isNative?: boolean;
 }
 
 /**
@@ -36,8 +39,9 @@ export interface TokensResponse {
  */
 export interface BufferAccountInfo {
   pubkey: string; // Buffer account address
-  authority: string; // Buffer authority
+  authority?: string; // Independently verified via RPC
   lamports: number; // Rent in lamports
+  dataLength?: number;
 }
 
 /**
@@ -60,8 +64,9 @@ export interface ScanSummaryResponse {
   maxClaimableSol?: number;
   tokenCount?: number;
   bufferCount?: number;
-  safeModeAssets?: number;
-  safeTokenCount?: number;
+  safeModeAssets?: number | null;
+  safeTokenCount?: number | null;
+  safeSummaryAvailable?: boolean;
   safeClaimAmount?: number | null;
 }
 
@@ -147,9 +152,21 @@ export interface StakesBuildTxResponse {
 }
 
 const REQUEST_TIMEOUT_MS = 15_000;
+const BUILD_TIMEOUT_MS = 30_000;
 
 function numberFromString(value: string | number | undefined): number {
-  return Number(value ?? 0);
+  if (value !== undefined && typeof value !== 'string' && typeof value !== 'number') throw new ScannerError('INVALID_BACKEND_AMOUNT');
+  if (typeof value === 'string' && !/^(0|[1-9][0-9]*)$/.test(value)) throw new ScannerError('INVALID_BACKEND_AMOUNT');
+  const parsed = Number(value ?? 0);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new ScannerError('INVALID_BACKEND_AMOUNT');
+  }
+  return parsed;
+}
+
+function signedNumberFromString(value: unknown): number {
+  if (typeof value !== 'string' || !/^-?(0|[1-9][0-9]*)$/.test(value) || !Number.isSafeInteger(Number(value))) throw new ScannerError('INVALID_BACKEND_AMOUNT');
+  return Number(value);
 }
 
 function normalizeUsdcSummary(
@@ -166,6 +183,76 @@ function normalizeUsdcSummary(
       raw.estimatedNetBaseUnits ?? raw.netBaseUnits,
     ),
   };
+}
+
+// Limit decoded bodies, including responses without Content-Length or with compression.
+const MAX_RESPONSE_BYTES = 1_048_576;
+const MAX_TARGETS = 256;
+const MAX_TRANSACTIONS = 25;
+const amount = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+const solAmount = z.number().nonnegative().max(Number.MAX_SAFE_INTEGER / 1e9);
+const address = z.string().regex(/^[1-9A-HJ-NP-Za-km-z]{32,44}$/);
+const boundedTargets = <T extends z.ZodType>(schema: T, key: string) =>
+  z.array(schema).max(MAX_TARGETS).refine(
+    rows => new Set(rows.map(row => (row as Record<string, unknown>)[key])).size === rows.length,
+    'Duplicate targets',
+  );
+const tokenResponseSchema = z.object({
+  claimableSol: solAmount,
+  rewardFee: z.number().nonnegative(),
+  tokens: boundedTargets(z.object({
+    pubKey: address, mintKey: address, amountUi: z.number().nonnegative(),
+    isFrozen: z.boolean(), lamports: amount,
+    programOwnerId: z.enum(['TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb']),
+    symbol: z.string().max(128).optional(), name: z.string().max(256).optional(),
+    decimals: z.number().int().min(0).max(255).optional(), isNft: z.boolean().optional(),
+  }), 'pubKey'),
+});
+const bufferResponseSchema = z.object({
+  claimableSol: solAmount,
+  buffers: boundedTargets(z.object({ address, lamports: amount, dataSize: amount }), 'address'),
+  complete: z.boolean().optional(), cacheStatus: z.string().optional(),
+  terminationReason: z.string().optional(),
+});
+const summarySchema = z.object({
+  totalClaimableSol: solAmount, assets: solAmount, buffers: solAmount,
+  maxClaimableSol: solAmount.optional(), tokenCount: amount.optional(), bufferCount: amount.optional(),
+  safeModeAssets: solAmount.nullish(), safeTokenCount: amount.nullish(), safeClaimAmount: solAmount.nullish(),
+});
+const transactionsSchema = z.array(z.string().max(1644).refine(value => {
+  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) return false;
+  const bytes = Buffer.from(value, 'base64');
+  return bytes.length > 0 && bytes.length <= 1232 && bytes.toString('base64') === value;
+}, 'Invalid serialized transaction')).max(MAX_TRANSACTIONS).refine(rows => new Set(rows).size === rows.length, 'Duplicate transactions');
+const stakesBuildSchema = z.object({
+  transactions: transactionsSchema, stakeCount: amount.max(MAX_TARGETS),
+  totalWithdrawableLamports: amount, totalFeeLamports: amount, totalNetLamports: amount,
+}).refine(value => value.totalNetLamports === value.totalWithdrawableLamports - value.totalFeeLamports, 'Inconsistent stake totals');
+
+async function readBoundedJson(response: Response): Promise<any> {
+  const reader = response.body?.getReader();
+  if (!reader) throw new ScannerError('INVALID_BACKEND_RESPONSE');
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > MAX_RESPONSE_BYTES) throw new ScannerError('BACKEND_RESPONSE_TOO_LARGE');
+      chunks.push(value);
+    }
+    const data = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    // Only the deployed legacy contract is understood. Do not silently parse a
+    // future version with legacy field defaults. Add v2 schemas with its rollout.
+    if (data && typeof data === 'object' && 'contractVersion' in data) {
+      throw new ScannerError('UNSUPPORTED_CONTRACT_VERSION');
+    }
+    return data;
+  } finally {
+    await reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
 }
 
 export class ScannerService {
@@ -195,6 +282,7 @@ export class ScannerService {
       `${this.config.apiUrl}/api/check-claimable-sol`,
       {
         method: 'POST',
+        redirect: 'error',
         headers: this.buildHeaders(),
         body: JSON.stringify({ publicKey: wallet }),
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
@@ -212,8 +300,11 @@ export class ScannerService {
       );
     }
 
-    const data = (await response.json()) as ScanSummaryResponse;
+    const data = summarySchema.parse(await readBoundedJson(response));
     const maxClaimableSol = data.maxClaimableSol ?? data.totalClaimableSol;
+    if (data.safeModeAssets === null || data.safeTokenCount === null || data.safeClaimAmount === null) {
+      return { ...data, totalClaimableSol: 0, assets: 0, tokenCount: 0, maxClaimableSol, safeSummaryAvailable: false };
+    }
 
     // Prefer explicit safe claim total when available.
     if (data.safeClaimAmount != null) {
@@ -239,19 +330,19 @@ export class ScannerService {
    * POST /api/get-claimable-tokens
    * Used by claim_sol.
    *
-   * CRITICAL: maxClaimMode is ALWAYS false in MCP.
-   * This ensures the backend's safety filtering is applied —
-   * valuable tokens and NFTs are excluded.
+   * Safe mode is the default. Explicit candidate discovery can request max mode;
+   * backend eligibility is never user approval.
    */
-  async getClaimableTokens(wallet: string): Promise<TokensResponse> {
+  async getClaimableTokens(wallet: string, includeExplicitCandidates = false): Promise<TokensResponse> {
     const response = await fetch(
       `${this.config.apiUrl}/api/get-claimable-tokens`,
       {
         method: 'POST',
+        redirect: 'error',
         headers: this.buildHeaders(),
         body: JSON.stringify({
           publicKey: wallet,
-          maxClaimMode: false, // NEVER true in MCP
+          maxClaimMode: includeExplicitCandidates, // Discovery only; selection and RPC verification happen locally
         }),
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       },
@@ -261,7 +352,7 @@ export class ScannerService {
       throw new ScannerError('Failed to fetch token accounts.');
     }
 
-    return response.json() as Promise<TokensResponse>;
+    return tokenResponseSchema.parse(await readBoundedJson(response));
   }
 
   /**
@@ -273,8 +364,9 @@ export class ScannerService {
       `${this.config.apiUrl}/api/get-claimable-buffers`,
       {
         method: 'POST',
+        redirect: 'error',
         headers: this.buildHeaders(),
-        body: JSON.stringify({ publicKey: wallet }),
+        body: JSON.stringify({ publicKey: wallet, surface: 'dedicated', forceFresh: true }),
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       },
     );
@@ -283,7 +375,13 @@ export class ScannerService {
       throw new ScannerError('Failed to fetch buffer accounts.');
     }
 
-    return response.json() as Promise<BuffersResponse>;
+    const data = bufferResponseSchema.parse(await readBoundedJson(response));
+    if (data.complete === false || data.cacheStatus === 'disabled' || data.terminationReason === 'disabled') {
+      throw new ScannerError('BUFFER_DISCOVERY_UNAVAILABLE');
+    }
+    return { claimableSol: data.claimableSol, buffers: data.buffers.map(buffer => ({
+      pubkey: buffer.address, lamports: buffer.lamports, dataLength: buffer.dataSize,
+    })) };
   }
 
   /**
@@ -293,28 +391,19 @@ export class ScannerService {
   async getClaimableStakes(
     wallet: string,
   ): Promise<{ count: number; estimatedSol: number }> {
-    try {
-      const response = await fetch(
-        `${this.config.apiUrl}/api/get-claimable-stakes`,
-        {
-          method: 'POST',
-          headers: this.buildHeaders(),
-          body: JSON.stringify({ publicKey: wallet }),
-          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-        },
-      );
-
-      if (!response.ok) return { count: 0, estimatedSol: 0 };
-
-      const data = (await response.json()) as any;
-
-      return {
-        count: Array.isArray(data.stakes) ? data.stakes.length : 0,
-        estimatedSol: data.totalClaimableSol || data.totalSol || 0,
-      };
-    } catch {
-      return { count: 0, estimatedSol: 0 }; // Non-fatal
-    }
+    const response = await fetch(`${this.config.apiUrl}/api/get-claimable-stakes`, {
+      method: 'POST',
+        redirect: 'error', headers: this.buildHeaders(),
+      body: JSON.stringify({ publicKey: wallet }),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    if (!response.ok) throw new ScannerError('STAKE_SCAN_UNAVAILABLE');
+    const data = z.object({
+      stakeAccounts: boundedTargets(z.object({ pubkey: address }).passthrough(), 'pubkey'),
+      count: amount.max(MAX_TARGETS), totalWithdrawableLamports: amount,
+    }).parse(await readBoundedJson(response));
+    if (data.count !== data.stakeAccounts.length) throw new ScannerError('INVALID_STAKE_COUNT');
+    return { count: data.count, estimatedSol: data.totalWithdrawableLamports / 1e9 };
   }
 
   /**
@@ -326,6 +415,7 @@ export class ScannerService {
       `${this.config.apiUrl}/api/rewards/scan`,
       {
         method: 'POST',
+        redirect: 'error',
         headers: this.buildHeaders(),
         body: JSON.stringify({ publicKey: wallet }),
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
@@ -337,7 +427,7 @@ export class ScannerService {
     }
 
     // Backend sends amount fields as stringified BigInts — normalize to numbers.
-    const raw: RawRewardsScanResponse = await response.json();
+    const raw: RawRewardsScanResponse = await readBoundedJson(response);
     const usdcRewards = normalizeUsdcSummary(raw.usdcRewards);
     return {
       pumpCashback: numberFromString(raw.pumpCashback),
@@ -370,9 +460,10 @@ export class ScannerService {
       `${this.config.apiUrl}/api/rewards/build-tx`,
       {
         method: 'POST',
+        redirect: 'error',
         headers: this.buildHeaders(),
-        body: JSON.stringify({ publicKey: wallet }),
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        body: JSON.stringify({ publicKey: wallet, includeOtherRewards: false, includePumpFunCreatorFees: true, includeKaminoFarmsRewards: false, includeOrcaAquafarmsRewards: false }),
+        signal: AbortSignal.timeout(BUILD_TIMEOUT_MS),
       },
     );
 
@@ -387,11 +478,14 @@ export class ScannerService {
 
     // Backend sends rewardsSummary values as strings (BigInt.toString()).
     // Normalize to numbers so the rest of the codebase can use them directly.
-    const raw = await response.json();
+    const raw = await readBoundedJson(response);
     const s = raw.builtSummary ?? raw.rewardsSummary;
+    if (!s || ['raydiumLaunchLabCreatorFee', 'raydiumCpmmCreatorFee', 'meteoraDbcCreatorFee'].some(key => numberFromString(s[key]) !== 0) || (s.splRewards?.length ?? 0) > 0) {
+      throw new ScannerError('UNSUPPORTED_REWARD_SOURCE');
+    }
     const usdcRewards = normalizeUsdcSummary(s.usdcRewards);
     return {
-      transactions: raw.transactions,
+      transactions: transactionsSchema.parse(raw.transactions),
       rewardsSummary: {
         pumpCashback: numberFromString(s.pumpCashback),
         pumpSwapCashback: numberFromString(s.pumpSwapCashback),
@@ -412,9 +506,7 @@ export class ScannerService {
         estimatedFeeLamports: numberFromString(
           s.estimatedFeeLamports ?? s.serviceFeeLamports,
         ),
-        estimatedNetLamports: numberFromString(
-          s.estimatedNetLamports ?? s.netLamports,
-        ),
+        estimatedNetLamports: signedNumberFromString(String(s.estimatedNetLamports ?? s.netLamports ?? '0')),
         ...(usdcRewards ? { usdcRewards } : {}),
       },
     };
@@ -437,9 +529,10 @@ export class ScannerService {
       `${this.config.apiUrl}/api/stakes/build-tx`,
       {
         method: 'POST',
+        redirect: 'error',
         headers: this.buildHeaders(),
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        signal: AbortSignal.timeout(BUILD_TIMEOUT_MS),
       },
     );
 
@@ -452,7 +545,7 @@ export class ScannerService {
       throw new ScannerError('Failed to build stake transactions.');
     }
 
-    return response.json() as Promise<StakesBuildTxResponse>;
+    return stakesBuildSchema.parse(await readBoundedJson(response));
   }
 }
 

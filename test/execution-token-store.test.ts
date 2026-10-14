@@ -26,27 +26,38 @@ describe('ExecutionTokenStore', () => {
   it('validates a freshly generated token', () => {
     const store = new ExecutionTokenStore<string>('test');
     const token = store.generate(WALLET_A, 'myPayload');
-    const payload = store.validate(token, WALLET_A);
+    const payload = store.take(token, WALLET_A);
     expect(payload).toBe('myPayload');
   });
 
-  it('consume removes the token', () => {
+  it('take removes the token before returning the payload', () => {
     const store = new ExecutionTokenStore<string>('test');
     const token = store.generate(WALLET_A, 'payload');
-    store.consume(token, WALLET_A);
-    expect(() => store.validate(token, WALLET_A)).toThrow(
-      'dry_run first',
-    );
+    expect(store.take(token, WALLET_A)).toBe('payload');
+    expect(() => store.take(token, WALLET_A)).toThrow('dry_run first');
   });
 
-  it('consume is safe to call on unknown token', () => {
+  it('only one concurrent caller can take a token', async () => {
     const store = new ExecutionTokenStore<string>('test');
-    expect(() => store.consume('nonexistent', WALLET_A)).not.toThrow();
+    const token = store.generate(WALLET_A, 'payload');
+    const results = await Promise.allSettled(Array.from({ length: 10 }, async () => {
+      const payload = store.take(token, WALLET_A);
+      await Promise.resolve();
+      return payload;
+    }));
+    expect(results.filter(r => r.status === 'fulfilled')).toHaveLength(1);
+  });
+
+  it('wrong-wallet take does not destroy the rightful token', () => {
+    const store = new ExecutionTokenStore<string>('test');
+    const token = store.generate(WALLET_A, 'payload');
+    expect(() => store.take(token, WALLET_B)).toThrow('does not match');
+    expect(store.take(token, WALLET_A)).toBe('payload');
   });
 
   it('rejects unknown token', () => {
     const store = new ExecutionTokenStore<string>('test');
-    expect(() => store.validate('nonexistent', WALLET_A)).toThrow(
+    expect(() => store.take('nonexistent', WALLET_A)).toThrow(
       'dry_run first',
     );
   });
@@ -54,7 +65,7 @@ describe('ExecutionTokenStore', () => {
   it('rejects token with wrong wallet', () => {
     const store = new ExecutionTokenStore<string>('test');
     const token = store.generate(WALLET_A, 'payload');
-    expect(() => store.validate(token, WALLET_B)).toThrow(
+    expect(() => store.take(token, WALLET_B)).toThrow(
       'does not match',
     );
   });
@@ -63,7 +74,7 @@ describe('ExecutionTokenStore', () => {
     const store = new ExecutionTokenStore<string>('test');
     const token = store.generate(WALLET_A, 'payload');
     vi.advanceTimersByTime(EXECUTION_TOKEN_TTL_MS + 1);
-    expect(() => store.validate(token, WALLET_A)).toThrow(
+    expect(() => store.take(token, WALLET_A)).toThrow(
       'Execution token expired',
     );
   });
@@ -72,7 +83,7 @@ describe('ExecutionTokenStore', () => {
     const store = new ExecutionTokenStore<string>('test');
     const token = store.generate(WALLET_A, 'payload');
     vi.advanceTimersByTime(EXECUTION_TOKEN_TTL_MS - 1);
-    expect(store.validate(token, WALLET_A)).toBe('payload');
+    expect(store.take(token, WALLET_A)).toBe('payload');
   });
 
   it('one token per wallet: new token replaces old', () => {
@@ -80,16 +91,16 @@ describe('ExecutionTokenStore', () => {
     const token1 = store.generate(WALLET_A, 'first');
     const token2 = store.generate(WALLET_A, 'second');
     expect(token1).not.toBe(token2);
-    expect(() => store.validate(token1, WALLET_A)).toThrow(ExecutionTokenError);
-    expect(store.validate(token2, WALLET_A)).toBe('second');
+    expect(() => store.take(token1, WALLET_A)).toThrow(ExecutionTokenError);
+    expect(store.take(token2, WALLET_A)).toBe('second');
   });
 
   it('different wallets can have independent tokens', () => {
     const store = new ExecutionTokenStore<string>('test');
     const tokenA = store.generate(WALLET_A, 'payloadA');
     const tokenB = store.generate(WALLET_B, 'payloadB');
-    expect(store.validate(tokenA, WALLET_A)).toBe('payloadA');
-    expect(store.validate(tokenB, WALLET_B)).toBe('payloadB');
+    expect(store.take(tokenA, WALLET_A)).toBe('payloadA');
+    expect(store.take(tokenB, WALLET_B)).toBe('payloadB');
   });
 
   it(`evicts oldest when max tokens (${MAX_ACTIVE_TOKENS}) reached`, () => {
@@ -103,13 +114,12 @@ describe('ExecutionTokenStore', () => {
       tokens.push(store.generate(wallet, i));
     }
 
-    expect(store.validate(tokens[MAX_ACTIVE_TOKENS - 1], wallets[MAX_ACTIVE_TOKENS - 1])).toBe(MAX_ACTIVE_TOKENS - 1);
 
     const extraWallet = `Wallet${String(MAX_ACTIVE_TOKENS).padStart(40, '0')}AAAA`;
     store.generate(extraWallet, MAX_ACTIVE_TOKENS);
 
-    expect(() => store.validate(tokens[0], wallets[0])).toThrow(ExecutionTokenError);
-    expect(store.validate(tokens[1], wallets[1])).toBe(1);
+    expect(() => store.take(tokens[0], wallets[0])).toThrow(ExecutionTokenError);
+    expect(store.take(tokens[1], wallets[1])).toBe(1);
   });
 
   it('expired tokens are evicted during generate', () => {
@@ -117,15 +127,15 @@ describe('ExecutionTokenStore', () => {
     const token1 = store.generate(WALLET_A, 'old');
     vi.advanceTimersByTime(EXECUTION_TOKEN_TTL_MS + 1);
     const token2 = store.generate(WALLET_B, 'new');
-    expect(() => store.validate(token1, WALLET_A)).toThrow(ExecutionTokenError);
-    expect(store.validate(token2, WALLET_B)).toBe('new');
+    expect(() => store.take(token1, WALLET_A)).toThrow(ExecutionTokenError);
+    expect(store.take(token2, WALLET_B)).toBe('new');
   });
 
   it('stores generic payload types', () => {
     const store = new ExecutionTokenStore<{ txCount: number; data: string[] }>('test');
     const payload = { txCount: 3, data: ['tx1', 'tx2', 'tx3'] };
     const token = store.generate(WALLET_A, payload);
-    const result = store.validate(token, WALLET_A);
+    const result = store.take(token, WALLET_A);
     expect(result).toEqual(payload);
   });
 });

@@ -4,6 +4,8 @@ import {
   TransactionInstruction,
   ComputeBudgetProgram,
   SystemProgram,
+  SYSVAR_CLOCK_PUBKEY,
+  SYSVAR_STAKE_HISTORY_PUBKEY,
 } from '@solana/web3.js';
 import {
   buildBurnAndCloseInstruction,
@@ -26,7 +28,7 @@ interface InstructionMeta {
   ix: TransactionInstruction;
   tokenCount: number;
   bufferCount: number;
-  lamports: number;
+  lamports: bigint;
   tokenPubkeys: string[];
   bufferPubkeys: string[];
 }
@@ -47,6 +49,15 @@ export interface ClaimPlan {
   stakeInfo: { count: number; estimatedSol: number } | null;
 }
 
+export function tokenNetLamports(lamports: number): bigint {
+  if (!Number.isSafeInteger(lamports) || lamports < 0) throw new TransactionValidationError('Invalid account lamports');
+  const gross = BigInt(lamports);
+  const percent = gross * 200n / 10_000n;
+  const excess = gross > 2_000_000n ? gross - 2_000_000n : 0n;
+  return gross - (percent > excess ? percent : excess);
+}
+export function bufferNetLamports(gross: bigint): bigint { return gross - gross * 500n / 10_000n; }
+
 export class TransactionBuilder {
   private config: Config;
 
@@ -61,6 +72,7 @@ export class TransactionBuilder {
     maxTransactions: number,
     stakeInfo?: { count: number; estimatedSol: number } | null,
   ): Promise<ClaimPlan> {
+    if (!Number.isInteger(maxTransactions) || maxTransactions < 1 || maxTransactions > 25) throw new TransactionValidationError('Invalid transaction limit');
     // ---- FILTER TOKENS ----
     // Skip frozen accounts (can't close them)
     const skippedFrozen = tokens.filter((t) => t.isFrozen);
@@ -102,7 +114,7 @@ export class TransactionBuilder {
             ix,
             tokenCount: chunk.length,
             bufferCount: 0,
-            lamports: chunk.reduce((s, t) => s + t.lamports, 0),
+            lamports: chunk.reduce((s, t) => s + tokenNetLamports(t.lamports), 0n),
             tokenPubkeys: chunk.map((t) => t.pubKey),
             bufferPubkeys: [],
           });
@@ -126,7 +138,7 @@ export class TransactionBuilder {
           ix,
           tokenCount: 0,
           bufferCount: chunk.length,
-          lamports: chunk.reduce((s, b) => s + b.lamports, 0),
+          lamports: bufferNetLamports(chunk.reduce((s, b) => s + BigInt(b.lamports), 0n)),
           tokenPubkeys: [],
           bufferPubkeys: chunk.map((b) => b.pubkey),
         });
@@ -169,18 +181,23 @@ export class TransactionBuilder {
         tx.add(meta.ix);
       }
 
+      const sizeCheck = new Transaction({ feePayer: walletPubkey, recentBlockhash: PublicKey.default.toBase58() });
+      sizeCheck.add(...tx.instructions);
+      if (sizeCheck.serialize({ requireAllSignatures: false, verifySignatures: false }).length > 1232) {
+        throw new TransactionValidationError('Cleanup transaction exceeds 1,232 bytes');
+      }
       transactions.push(tx);
     }
 
     // ---- ESTIMATE SOL (only for accounts covered by used transactions) ----
-    // API returns net amounts with token net-floor / buffer fees already included.
+    // RPC-verified account lamports are gross. Apply the deployed fee policy.
     const usedMeta = usedGroups.flat();
     const coveredTokenCount = usedMeta.reduce((s, m) => s + m.tokenCount, 0);
     const coveredBufferCount = usedMeta.reduce((s, m) => s + m.bufferCount, 0);
-    const coveredLamports = usedMeta.reduce((s, m) => s + m.lamports, 0);
+    const coveredLamports = usedMeta.reduce((s, m) => s + m.lamports, 0n);
     const selectedTokenPubkeys = usedMeta.flatMap((m) => m.tokenPubkeys);
     const selectedBufferPubkeys = usedMeta.flatMap((m) => m.bufferPubkeys);
-    const estimatedSol = coveredLamports / 1e9;
+    const estimatedSol = Number(coveredLamports) / 1e9;
 
     return {
       tokenAccountCount: coveredTokenCount,
@@ -319,6 +336,11 @@ export const PUMP_CLAIM_CASHBACK = Buffer.from([37, 58, 35, 126, 190, 53, 228, 1
 export const PUMP_COLLECT_CREATOR_FEE = Buffer.from([20, 22, 86, 123, 198, 28, 219, 132]);
 export const PUMPSWAP_COLLECT_COIN_CREATOR_FEE = Buffer.from([160, 57, 89, 42, 181, 139, 43, 66]);
 
+export const PUMP_CLAIM_CASHBACK_V2 = Buffer.from([122, 243, 204, 65, 94, 116, 29, 55]);
+export const PUMP_COLLECT_CREATOR_FEE_V2 = Buffer.from([207, 17, 138, 242, 4, 34, 19, 56]);
+export const CLOSE_ACCUMULATOR = Buffer.from([249, 69, 164, 218, 150, 103, 84, 138]);
+export const INIT_ACCUMULATOR = Buffer.from([94, 6, 202, 115, 255, 96, 232, 183]);
+
 // Well-known addresses used by validation.
 export const NATIVE_MINT = new PublicKey(
   'So11111111111111111111111111111111111111112',
@@ -367,7 +389,7 @@ const SPL_TOKEN = SPL_TOKEN_PROGRAM_ID.toBase58();
  * **Rewards (claim_rewards):** Structural safety only. Pump/PumpSwap claim
  * amounts are determined on-chain at execution time and are not encoded in
  * instruction data, so the fee cap relies on `backendReportedTotalLamports`
- * (cross-checked against an independent /scan call by the caller). This
+ * (cross-checked against a second backend /scan call by the caller). This
  * protects against accidental drift between /build-tx and /scan, but not
  * against a fully compromised backend that lies consistently on both
  * endpoints.
@@ -391,20 +413,26 @@ export function validateTransactionPrograms(
   backendReportedTotalLamports: number,
   explicitMaxFeeLamports?: number,
   explicitMaxUsdcFeeBaseUnits?: bigint,
+  source?: 'stakes' | 'rewards',
 ): void {
+  if (transactions.length > 25 || !Number.isSafeInteger(backendReportedTotalLamports) || backendReportedTotalLamports < 0 || !Number.isSafeInteger(feeBps) || feeBps < 0 || (explicitMaxFeeLamports !== undefined && (!Number.isSafeInteger(explicitMaxFeeLamports) || explicitMaxFeeLamports < 0))) {
+    throw new TransactionValidationError('Invalid transaction limits or fee amounts');
+  }
   const feeVaultKey = new PublicKey(FEE_VAULT);
   const MAX_COMPUTE_UNITS = 1_400_000;
 
   // Pre-derive all wallet-dependent PDAs once.
   const pdas = deriveExpectedPdas(walletPubkey);
+  let batchNativeFee = 0n;
+  let batchUsdcFee = 0n;
 
   for (let i = 0; i < transactions.length; i++) {
     const label = `Tx ${i + 1}`;
 
     // Per-transaction accumulators.
-    let txFeeLamports = 0;
+    let txFeeLamports = 0n;
     let txFeeUsdcBaseUnits = 0n;
-    let txStakeWithdrawLamports = 0;
+    let txStakeWithdrawLamports = 0n;
     let txHasClaim = false;
 
     for (const ix of transactions[i].instructions) {
@@ -416,10 +444,15 @@ export function validateTransactionPrograms(
         );
       }
 
+      if ((source === 'rewards' && pid === STAKE_PROGRAM) ||
+          (source === 'stakes' && ![STAKE_PROGRAM, SYSTEM_PROGRAM, COMPUTE_BUDGET].includes(pid))) {
+        throw new TransactionValidationError(`${label}: unexpected claim source`);
+      }
+
       // ---- System Program ----
       if (pid === SYSTEM_PROGRAM) {
         validateSystemTransfer(ix, walletPubkey, feeVaultKey, label);
-        txFeeLamports += Number(ix.data.readBigUInt64LE(4));
+        txFeeLamports += ix.data.readBigUInt64LE(4);
       }
 
       // ---- Stake Program (Withdraw only) ----
@@ -451,7 +484,7 @@ export function validateTransactionPrograms(
       // ---- PumpSwap ----
       if (pid === PUMPSWAP_PROGRAM) {
         validatePumpSwapIx(ix, walletPubkey, pdas, label);
-        txHasClaim = true;
+        if (!ix.data.equals(INIT_ACCUMULATOR)) txHasClaim = true;
       }
 
       // ---- SPL Token ----
@@ -463,6 +496,17 @@ export function validateTransactionPrograms(
           label,
         );
       }
+      for (const meta of ix.keys) {
+        if (meta.isSigner && !meta.pubkey.equals(walletPubkey)) {
+          throw new TransactionValidationError(`${label}: unexpected signer`);
+        }
+      }
+    }
+
+    batchNativeFee += txFeeLamports;
+    batchUsdcFee += txFeeUsdcBaseUnits;
+    if (source === 'rewards' && (batchNativeFee > BigInt(explicitMaxFeeLamports ?? 0) || batchUsdcFee > (explicitMaxUsdcFeeBaseUnits ?? 0n))) {
+      throw new TransactionValidationError('Reward batch exceeds its aggregate fee cap');
     }
 
     // ---- Per-transaction: must have at least one claim instruction ----
@@ -476,13 +520,12 @@ export function validateTransactionPrograms(
     // Stakes: fee cap from proven withdraw amounts in instruction data.
     // Rewards: Pump/PumpSwap amounts are on-chain; fall back to backend
     // total divided evenly across transactions (best available bound).
-    const claimTotal = txStakeWithdrawLamports > 0
+    const claimTotal = txStakeWithdrawLamports > 0n
       ? txStakeWithdrawLamports
-      : backendReportedTotalLamports / transactions.length;
-    const maxFee =
-      txStakeWithdrawLamports > 0 || explicitMaxFeeLamports === undefined
-        ? Math.floor(claimTotal * feeBps / 10_000)
-        : Math.floor(explicitMaxFeeLamports / transactions.length);
+      : BigInt(backendReportedTotalLamports) / BigInt(transactions.length);
+    const maxFee = txStakeWithdrawLamports > 0n || explicitMaxFeeLamports === undefined
+      ? claimTotal * BigInt(feeBps) / 10_000n
+      : BigInt(explicitMaxFeeLamports) / BigInt(source === 'rewards' ? 1 : transactions.length);
 
     if (txFeeLamports > maxFee) {
       throw new TransactionValidationError(
@@ -497,8 +540,8 @@ export function validateTransactionPrograms(
         );
       }
       const maxUsdcFee =
-        (explicitMaxUsdcFeeBaseUnits + BigInt(transactions.length - 1)) /
-        BigInt(transactions.length);
+        explicitMaxUsdcFeeBaseUnits /
+        BigInt(source === 'rewards' ? 1 : transactions.length);
       if (txFeeUsdcBaseUnits > maxUsdcFee) {
         throw new TransactionValidationError(
           `${label}: USDC fee ${txFeeUsdcBaseUnits.toString()} base units exceeds max ${maxUsdcFee.toString()}`,
@@ -623,7 +666,7 @@ function validateSystemTransfer(
   feeVault: PublicKey,
   label: string,
 ): void {
-  if (ix.data.length < 12) {
+  if (ix.data.length !== 12) {
     throw new TransactionValidationError(
       `${label}: system instruction data too short`,
     );
@@ -640,6 +683,7 @@ function validateSystemTransfer(
   }
   requireKey(ix, 0, wallet, 'system Transfer source', label);
   requireKey(ix, 1, feeVault, 'system Transfer destination', label);
+  if (!ix.keys[0].isSigner || !ix.keys[0].isWritable || !ix.keys[1].isWritable) throw new TransactionValidationError(`${label}: invalid transfer metas`);
 }
 
 /** Validate Stake instruction is Withdraw (type 4). Returns withdraw lamports. */
@@ -647,10 +691,10 @@ function validateStakeWithdraw(
   ix: TransactionInstruction,
   wallet: PublicKey,
   label: string,
-): number {
+): bigint {
   // Stake Withdraw layout: [u32LE type=4][u64LE lamports]
   // Keys: [stake, to, clock, stakeHistory, withdrawAuthority]
-  if (ix.data.length < 12) {
+  if (ix.data.length !== 12) {
     throw new TransactionValidationError(
       `${label}: stake instruction data too short`,
     );
@@ -667,7 +711,14 @@ function validateStakeWithdraw(
     );
   }
   requireKey(ix, 1, wallet, 'stake Withdraw destination', label);
-  return Number(ix.data.readBigUInt64LE(4));
+  requireKey(ix, 2, SYSVAR_CLOCK_PUBKEY, 'stake clock', label);
+  requireKey(ix, 3, SYSVAR_STAKE_HISTORY_PUBKEY, 'stake history', label);
+  requireKey(ix, 4, wallet, 'stake withdraw authority', label);
+  if (!ix.keys[0].isWritable || ix.keys[0].isSigner || !ix.keys[1].isWritable ||
+      !ix.keys[4].isSigner || ix.keys[2].isWritable || ix.keys[3].isWritable) {
+    throw new TransactionValidationError(`${label}: invalid stake metas`);
+  }
+  return ix.data.readBigUInt64LE(4);
 }
 
 function validateAtaCreate(
@@ -681,7 +732,7 @@ function validateAtaCreate(
       `${label}: ATA instruction expected 6 accounts, got ${ix.keys.length}`,
     );
   }
-  if (ix.data.length < 1 || ix.data[0] !== 1) {
+  if (ix.data.length !== 1 || ix.data[0] !== 1) {
     throw new TransactionValidationError(
       `${label}: ATA instruction is not CreateIdempotent`,
     );
@@ -718,10 +769,11 @@ function validateComputeBudget(
   maxCU: number,
   label: string,
 ): void {
-  if (ix.data.length === 0) return;
   const disc = ix.data[0];
-
-  if (disc === 2 && ix.data.length >= 5) {
+  if (ix.keys.length !== 0 || !((disc === 2 && ix.data.length === 5) || (disc === 3 && ix.data.length === 9))) {
+    throw new TransactionValidationError(`${label}: invalid ComputeBudget instruction`);
+  }
+  if (disc === 2) {
     const units = ix.data.readUInt32LE(1);
     if (units > maxCU) {
       throw new TransactionValidationError(
@@ -729,7 +781,7 @@ function validateComputeBudget(
       );
     }
   }
-  if (disc === 3 && ix.data.length >= 9) {
+  if (disc === 3) {
     const microLamports = Number(ix.data.readBigUInt64LE(1));
     if (microLamports > PRIORITY_FEE_MAX) {
       throw new TransactionValidationError(
@@ -748,18 +800,48 @@ function validateComputeBudget(
  * collect_creator_fee (5 keys):
  *   [0] user  [1] creatorVault  [2] System  [3] eventAuthority  [4] PUMP_PROGRAM
  */
+function supportedQuoteMint(mint: PublicKey | undefined, label: string): PublicKey {
+  if (!mint || (!mint.equals(USDC_MINT) && !mint.equals(NATIVE_MINT))) throw new TransactionValidationError(`${label}: unsupported quote mint`);
+  return mint;
+}
+function validateRewardLayout(ix: TransactionInstruction, keys: PublicKey[], writable: number[], wallet: PublicKey, label: string, signers: number[] = []): void {
+  if (ix.keys.length !== keys.length) throw new TransactionValidationError(`${label}: invalid reward account count`);
+  keys.forEach((key, i) => requireKey(ix, i, key, 'reward account', label));
+  if (writable.some(i => !ix.keys[i].isWritable) || signers.some(i => !ix.keys[i].isSigner) ||
+      ix.keys.some(meta => meta.isSigner && !meta.pubkey.equals(wallet))) throw new TransactionValidationError(`${label}: invalid reward metas`);
+}
+
 function validatePumpIx(
   ix: TransactionInstruction,
   wallet: PublicKey,
   pdas: WalletPdas,
   label: string,
 ): void {
-  if (ix.data.length < 8) {
+  if (ix.data.length !== 8) {
     throw new TransactionValidationError(
       `${label}: Pump instruction data too short`,
     );
   }
   const disc = ix.data.subarray(0, 8);
+  if (disc.equals(CLOSE_ACCUMULATOR)) {
+    validateRewardLayout(ix, [wallet, pdas.pumpAccumulator, pdas.pumpEventAuthority, PUMP_PROGRAM_ID], [0, 1], wallet, label, [0]);
+    return;
+  }
+  if (disc.equals(PUMP_CLAIM_CASHBACK_V2)) {
+    const mint = supportedQuoteMint(ix.keys[2]?.pubkey, label);
+    validateRewardLayout(ix, [wallet, pdas.pumpAccumulator, mint, SPL_TOKEN_PROGRAM_ID, ATA_PROGRAM_ID,
+      deriveAta(pdas.pumpAccumulator, mint), deriveAta(wallet, mint), SystemProgram.programId,
+      pdas.pumpEventAuthority, PUMP_PROGRAM_ID], [0, 1, 5, 6], wallet, label);
+    return;
+  }
+  if (disc.equals(PUMP_COLLECT_CREATOR_FEE_V2)) {
+    const mint = supportedQuoteMint(ix.keys[4]?.pubkey, label);
+    validateRewardLayout(ix, [wallet, deriveAta(wallet, mint), pdas.pumpCreatorVault,
+      deriveAta(pdas.pumpCreatorVault, mint), mint, SPL_TOKEN_PROGRAM_ID, ATA_PROGRAM_ID,
+      SystemProgram.programId, pdas.pumpEventAuthority, PUMP_PROGRAM_ID], [0, 1, 2, 3], wallet, label);
+    return;
+  }
+
 
   if (PUMP_CLAIM_CASHBACK.equals(disc)) {
     if (ix.keys.length !== 5) {
@@ -808,12 +890,22 @@ function validatePumpSwapIx(
   pdas: WalletPdas,
   label: string,
 ): void {
-  if (ix.data.length < 8) {
+  if (ix.data.length !== 8) {
     throw new TransactionValidationError(
       `${label}: PumpSwap instruction data too short`,
     );
   }
   const disc = ix.data.subarray(0, 8);
+  if (disc.equals(CLOSE_ACCUMULATOR)) {
+    validateRewardLayout(ix, [wallet, pdas.pumpSwapAccumulator, pdas.pumpSwapEventAuthority, PUMP_AMM_PROGRAM_ID], [0, 1], wallet, label, [0]);
+    return;
+  }
+  if (disc.equals(INIT_ACCUMULATOR)) {
+    validateRewardLayout(ix, [wallet, wallet, pdas.pumpSwapAccumulator, SystemProgram.programId,
+      pdas.pumpSwapEventAuthority, PUMP_AMM_PROGRAM_ID], [0, 2], wallet, label, [0]);
+    return;
+  }
+
 
   if (PUMP_CLAIM_CASHBACK.equals(disc)) {
     if (ix.keys.length !== 9) {
@@ -823,10 +915,11 @@ function validatePumpSwapIx(
     }
     requireKey(ix, 0, wallet, 'PumpSwap claim_cashback user', label);
     requireKey(ix, 1, pdas.pumpSwapAccumulator, 'PumpSwap claim_cashback accumulator', label);
-    requireKey(ix, 2, NATIVE_MINT, 'PumpSwap claim_cashback mint', label);
+    const quoteMint = supportedQuoteMint(ix.keys[2].pubkey, label);
+    requireKey(ix, 2, quoteMint, 'PumpSwap claim_cashback mint', label);
     requireKey(ix, 3, SPL_TOKEN_PROGRAM_ID, 'PumpSwap claim_cashback token program', label);
-    requireKey(ix, 4, pdas.pumpSwapAccumulatorWsolAta, 'PumpSwap claim_cashback accumulator ATA', label);
-    requireKey(ix, 5, pdas.userWsolAta, 'PumpSwap claim_cashback user ATA', label);
+    requireKey(ix, 4, deriveAta(pdas.pumpSwapAccumulator, quoteMint), 'PumpSwap claim_cashback accumulator ATA', label);
+    requireKey(ix, 5, deriveAta(wallet, quoteMint), 'PumpSwap claim_cashback user ATA', label);
     requireKey(ix, 6, SystemProgram.programId, 'PumpSwap claim_cashback System Program', label);
     requireKey(ix, 7, pdas.pumpSwapEventAuthority, 'PumpSwap claim_cashback eventAuthority', label);
     requireKey(ix, 8, PUMP_AMM_PROGRAM_ID, 'PumpSwap claim_cashback program self-ref', label);
@@ -836,12 +929,13 @@ function validatePumpSwapIx(
         `${label}: PumpSwap collect_coin_creator_fee expected 8 accounts, got ${ix.keys.length}`,
       );
     }
-    requireKey(ix, 0, NATIVE_MINT, 'PumpSwap collect_coin_creator_fee mint', label);
+    const quoteMint = supportedQuoteMint(ix.keys[0].pubkey, label);
+    requireKey(ix, 0, quoteMint, 'PumpSwap collect_coin_creator_fee mint', label);
     requireKey(ix, 1, SPL_TOKEN_PROGRAM_ID, 'PumpSwap collect_coin_creator_fee token program', label);
     requireKey(ix, 2, wallet, 'PumpSwap collect_coin_creator_fee user', label);
     requireKey(ix, 3, pdas.pumpSwapCreatorVaultAuthority, 'PumpSwap collect_coin_creator_fee vaultAuthority', label);
-    requireKey(ix, 4, pdas.pumpSwapCreatorVaultAta, 'PumpSwap collect_coin_creator_fee vaultAta', label);
-    requireKey(ix, 5, pdas.userWsolAta, 'PumpSwap collect_coin_creator_fee userAta', label);
+    requireKey(ix, 4, deriveAta(pdas.pumpSwapCreatorVaultAuthority, quoteMint), 'PumpSwap collect_coin_creator_fee vaultAta', label);
+    requireKey(ix, 5, deriveAta(wallet, quoteMint), 'PumpSwap collect_coin_creator_fee userAta', label);
     requireKey(ix, 6, pdas.pumpSwapEventAuthority, 'PumpSwap collect_coin_creator_fee eventAuthority', label);
     requireKey(ix, 7, PUMP_AMM_PROGRAM_ID, 'PumpSwap collect_coin_creator_fee program self-ref', label);
   } else {
@@ -869,6 +963,8 @@ function validateSplTokenInstruction(
         `${label}: SPL Token CloseAccount expected 3 accounts, got ${ix.keys.length}`,
       );
     }
+    requireKey(ix, 0, pdas.userWsolAta, 'SPL Token CloseAccount source', label);
+    if (ix.data.length !== 1) throw new TransactionValidationError(`${label}: invalid CloseAccount data`);
     requireKey(ix, 1, wallet, 'SPL Token CloseAccount destination', label);
     requireKey(ix, 2, wallet, 'SPL Token CloseAccount authority', label);
     return 0n;
@@ -880,7 +976,7 @@ function validateSplTokenInstruction(
     );
   }
 
-  if (ix.data.length < 10) {
+  if (ix.data.length !== 10 || ix.data[9] !== 6) {
     throw new TransactionValidationError(
       `${label}: SPL Token TransferChecked data too short`,
     );

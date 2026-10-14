@@ -1,14 +1,12 @@
 import { z } from 'zod';
-import { randomBytes } from 'crypto';
 import { Config } from '../config.js';
 import {
   ScannerService,
+  ScannerError,
   TokenAccountInfo,
-  BufferAccountInfo,
 } from '../services/scanner.js';
 import {
   TransactionBuilder,
-  ClaimPlan,
   TransactionValidationError,
 } from '../services/transaction.js';
 import { SignerService } from '../services/signer.js';
@@ -20,105 +18,8 @@ import {
 import { formatSol } from '../formatter.js';
 import {
   WEBSITE_URL,
-  EXECUTION_TOKEN_TTL_MS,
-  MAX_ACTIVE_TOKENS,
   DEFAULT_MAX_TRANSACTIONS,
 } from '../constants.js';
-
-// ---- Execution Token Store ----
-
-interface TokenEntry {
-  token: string;
-  wallet: string;
-  // Account set approved during dry_run (already capped by max_transactions).
-  tokens: TokenAccountInfo[];
-  buffers: BufferAccountInfo[];
-  plan: ClaimPlan;
-  maxTransactions: number;
-  createdAt: number;
-}
-
-const tokensByWallet = new Map<string, TokenEntry>();
-const allTokens = new Map<string, TokenEntry>();
-
-function generateToken(
-  wallet: string,
-  tokens: TokenAccountInfo[],
-  buffers: BufferAccountInfo[],
-  plan: ClaimPlan,
-  maxTransactions: number,
-): string {
-  // Evict expired
-  const now = Date.now();
-  for (const [t, e] of allTokens) {
-    if (now - e.createdAt > EXECUTION_TOKEN_TTL_MS) {
-      allTokens.delete(t);
-      if (tokensByWallet.get(e.wallet)?.token === t)
-        tokensByWallet.delete(e.wallet);
-    }
-  }
-  // Enforce max (evict oldest)
-  while (allTokens.size >= MAX_ACTIVE_TOKENS) {
-    let oldest: string | null = null;
-    let oldestTime = Infinity;
-    for (const [t, e] of allTokens) {
-      if (e.createdAt < oldestTime) {
-        oldestTime = e.createdAt;
-        oldest = t;
-      }
-    }
-    if (oldest) {
-      const e = allTokens.get(oldest)!;
-      allTokens.delete(oldest);
-      if (tokensByWallet.get(e.wallet)?.token === oldest)
-        tokensByWallet.delete(e.wallet);
-    }
-  }
-  // Invalidate previous for this wallet (max 1 per wallet)
-  const prev = tokensByWallet.get(wallet);
-  if (prev) allTokens.delete(prev.token);
-
-  const token = randomBytes(16).toString('hex');
-  const entry: TokenEntry = {
-    token,
-    wallet,
-    tokens,
-    buffers,
-    plan,
-    maxTransactions,
-    createdAt: now,
-  };
-  allTokens.set(token, entry);
-  tokensByWallet.set(wallet, entry);
-  return token;
-}
-
-function validateToken(token: string, wallet: string): TokenEntry {
-  const entry = allTokens.get(token);
-  if (!entry)
-    throw new ClaimError(
-      'Run claim_sol with dry_run first to get an execution token.',
-    );
-  if (entry.wallet !== wallet)
-    throw new ClaimError('Execution token does not match this wallet.');
-  if (Date.now() - entry.createdAt > EXECUTION_TOKEN_TTL_MS) {
-    allTokens.delete(token);
-    tokensByWallet.delete(wallet);
-    throw new ClaimError('Execution token expired. Run dry_run again.');
-  }
-  return entry;
-}
-
-function consumeToken(token: string, wallet: string): void {
-  allTokens.delete(token);
-  if (tokensByWallet.get(wallet)?.token === token)
-    tokensByWallet.delete(wallet);
-}
-
-function shortenAddress(value: string): string {
-  if (value.length <= 10) return value;
-  return `${value.slice(0, 4)}...${value.slice(-4)}`;
-}
 
 function tokenLabel(token: TokenAccountInfo): string {
   const symbol = token.symbol?.trim();
@@ -158,10 +59,10 @@ function isExcludedByNameOrSymbol(
 function buildTokenPreview(tokens: TokenAccountInfo[]): string {
   if (tokens.length === 0) return '';
 
-  const empty = tokens.filter((t) => t.amountUi === 0);
-  const nonEmpty = tokens.filter((t) => t.amountUi > 0);
+  const empty = tokens.filter((t) => t.amountBaseUnits === '0');
+  const nonEmpty = tokens.filter((t) => t.amountBaseUnits !== '0');
   const MAX_PER_GROUP = 8;
-  const lines: string[] = ['Tokens selected for burn (safe mode):'];
+  const lines: string[] = ['Selected token accounts:'];
 
   const appendGroup = (
     title: string,
@@ -172,12 +73,12 @@ function buildTokenPreview(tokens: TokenAccountInfo[]): string {
     lines.push('', `${title}:`);
 
     for (const token of group.slice(0, MAX_PER_GROUP)) {
-      const base = `  - ${tokenLabel(token)} — ${shortenAddress(token.mintKey)}`;
+      const base = `  - ${tokenLabel(token)} — account ${token.pubKey}, mint ${token.mintKey}`;
       if (!includeBalance) {
         lines.push(base);
         continue;
       }
-      lines.push(`${base} (balance: ${token.amountUi})`);
+      lines.push(`${base} (base units: ${token.amountBaseUnits})`);
     }
 
     if (group.length > MAX_PER_GROUP) {
@@ -201,18 +102,16 @@ export function getClaimToolDefinition(keypairWallet?: string) {
   return {
     name: 'claim_sol',
     description:
-      'Claim reclaimable SOL from dormant token and buffer accounts. ' +
-      'Burns worthless token balances and closes accounts to reclaim rent. ' +
-      'This action is irreversible — closed accounts cannot be recovered. ' +
-      'Signs and broadcasts locally via UnclaimedSOL on-chain program. ' +
+      'Preview reclaimable SOL from empty canonical token accounts and explicitly selected positive token accounts or buffers. ' +
+      'Token burning and account closure are irreversible. ' +
       'Token cleanup lets the user keep up to 0.002 SOL per closed account; buffers use a 5% fee. ' +
       'For deactivated stakes use claim_stakes; for DeFi rewards use claim_rewards. ' +
-      'Call with dry_run (default) first, then with execution_token to execute.',
+      'Preview only until checked on-chain cleanup instructions and SDK builders are available. Execution fails closed.',
     annotations: {
-      title: 'Claim Dormant SOL (Vibe Claiming)',
-      readOnlyHint: false,
-      destructiveHint: true,
-      idempotentHint: false,
+      title: 'Preview Dormant SOL',
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
       openWorldHint: true,
     },
     inputSchema: {
@@ -225,24 +124,22 @@ export function getClaimToolDefinition(keypairWallet?: string) {
         dry_run: {
           type: 'boolean',
           description:
-            'Default true. Shows plan + returns execution_token.',
+            'Default true. Shows a read-only estimate. Execution is currently unavailable.',
           default: true,
-        },
-        execution_token: {
-          type: 'string',
-          description:
-            'Token from dry_run. Required when dry_run is false.',
         },
         max_transactions: {
           type: 'integer',
-          description: 'Max txs to send. Default 10.',
+          description: 'Max transactions included in the estimate. Default 10.',
           default: DEFAULT_MAX_TRANSACTIONS,
+          maximum: 25,
         },
+        token_accounts: { type: 'array', maxItems: 256, uniqueItems: true, items: { type: 'string' }, description: 'Exact token accounts selected for this dry run. This selection is for preview only.' },
+        buffer_accounts: { type: 'array', maxItems: 256, uniqueItems: true, items: { type: 'string' }, description: 'Exact buffers selected for this dry run. Buffers are never automatic.' },
         exclude: {
           type: 'array',
           items: { type: 'string' },
           description:
-            'Optional token symbols or names to skip at execution time (case-insensitive). Example: ["BONK", "USD Coin"].',
+            'Optional token symbols or names to skip during the dry run (case-insensitive). Example: ["BONK", "USD Coin"].',
         },
       },
       ...(keypairWallet ? {} : { required: ['wallet_address'] }),
@@ -252,16 +149,20 @@ export function getClaimToolDefinition(keypairWallet?: string) {
 
 // ---- Handler ----
 
+const AddressSchema = z.string().regex(/^[1-9A-HJ-NP-Za-km-z]{32,44}$/);
+const AddressesSchema = z.array(AddressSchema).max(256).refine(a => new Set(a).size === a.length, 'Duplicate targets');
 const InputSchema = z.object({
   wallet_address: z.string().optional(),
   dry_run: z.boolean().default(true),
-  execution_token: z.string().optional(),
   max_transactions: z
     .number()
     .int()
     .positive()
+    .max(25)
     .default(DEFAULT_MAX_TRANSACTIONS),
-  exclude: z.array(z.string()).optional(),
+  token_accounts: AddressesSchema.optional(),
+  buffer_accounts: AddressesSchema.optional(),
+  exclude: z.array(z.string().max(128)).max(256).optional(),
 });
 
 export async function handleClaim(
@@ -275,10 +176,12 @@ export async function handleClaim(
     const {
       wallet_address,
       dry_run,
-      execution_token,
       max_transactions,
-      exclude,
+      exclude, token_accounts, buffer_accounts,
     } = InputSchema.parse(args ?? {});
+    if (!dry_run) {
+      throw new ClaimError('CHECKED_CLEANUP_UNAVAILABLE: cleanup execution requires checked program instructions and SDK builders. This tool currently provides previews only.');
+    }
     const resolvedAddress =
       wallet_address || config.keypair?.publicKey.toBase58();
     if (!resolvedAddress) {
@@ -294,206 +197,86 @@ export async function handleClaim(
 
     verifyWalletMatchesKeypair(walletPubkey, config.keypair!.publicKey);
 
-    // ---- DRY RUN ----
-    if (dry_run) {
-      // Fetch token + buffer accounts (always fresh, no cache)
-      const [tokensResp, buffersResp] = await Promise.all([
-        scanner.getClaimableTokens(wallet),
-        scanner.getClaimableBuffers(wallet),
-      ]);
+    // Fetch token + buffer accounts (always fresh, no cache)
+    const [tokensResp, buffersResp] = await Promise.all([
+      scanner.getClaimableTokens(wallet, Boolean(token_accounts?.length)),
+      buffer_accounts?.length ? scanner.getClaimableBuffers(wallet) : Promise.resolve({ claimableSol: 0, buffers: [] }),
+    ]);
 
-      // Optionally fetch stake info for reporting
-      let stakeInfo: { count: number; estimatedSol: number } | null =
-        null;
-      try {
-        stakeInfo = await scanner.getClaimableStakes(wallet);
-      } catch {
-        /* non-fatal */
-      }
+    // Optionally fetch stake info for reporting
+    let stakeInfo: { count: number; estimatedSol: number } | null =
+      null;
+    try {
+      stakeInfo = await scanner.getClaimableStakes(wallet);
+    } catch {
+      /* non-fatal */
+    }
 
-      const plan = await txBuilder.buildClaimPlan(
-        tokensResp.tokens,
-        buffersResp.buffers,
-        walletPubkey,
-        max_transactions,
-        stakeInfo,
-      );
-
-      if (plan.tokenAccountCount + plan.bufferAccountCount === 0) {
-        let msg =
-          'No token or buffer accounts to claim for this wallet.';
-        if (stakeInfo && stakeInfo.count > 0) {
-          msg += `\n\nThis wallet may have stake account claims at ${url}`;
-        }
-        return {
-          content: [{ type: 'text', text: msg }],
-          isError: true,
-        };
-      }
-
-      const selectedTokenSet = new Set(plan.selectedTokenPubkeys);
-      const selectedBufferSet = new Set(plan.selectedBufferPubkeys);
-      const selectedTokens = tokensResp.tokens.filter((t) =>
-        selectedTokenSet.has(t.pubKey),
-      );
-      const selectedBuffers = buffersResp.buffers.filter((b) =>
-        selectedBufferSet.has(b.pubkey),
-      );
-
-      const token = generateToken(
-        wallet,
-        selectedTokens,
-        selectedBuffers,
-        plan,
-        max_transactions,
-      );
-
-      let text =
-        `Dry run — no transactions sent.\n\n` +
-        `Estimated claim: ${formatSol(plan.estimatedSol)} from ` +
-        `${plan.tokenAccountCount} token accounts and ${plan.bufferAccountCount} buffer accounts ` +
-        `(token cleanup uses a 0.002 SOL user-net rule; buffers use a 5% fee).\n` +
-        `Transactions needed: ${plan.transactionsNeeded}` +
-        (plan.cappedByMaxTx
-          ? ` of ${plan.totalTransactionsNeeded} (limited by max_transactions: ${max_transactions}` +
-            ` — ${plan.totalTokenAccountCount - plan.tokenAccountCount} token and ` +
-            `${plan.totalBufferAccountCount - plan.bufferAccountCount} buffer accounts deferred)`
-          : '');
-
-      // Frozen accounts warning
-      if (plan.skippedFrozenCount > 0) {
-        text += `\n\n${plan.skippedFrozenCount} frozen account(s) skipped (cannot be closed).`;
-      }
-
-      text += buildTokenPreview(selectedTokens);
-
-      // Irreversibility warning
-      text +=
-        `\n\nThis will permanently close these accounts and burn any remaining ` +
-        `token balances. This action is irreversible. For a visual breakdown of ` +
-        `each account, review at ${url} before proceeding.`;
-
-      if (plan.tokenAccountCount > 0) {
-        text +=
-          `\n\nIf needed, you can skip specific tokens during execution with ` +
-          `exclude: ["TOKEN_SYMBOL", "Token Name"].`;
-      }
-
-      // Execution token
-      text +=
-        `\n\nExecution token: ${token}\n` +
-        `Expires in 60 seconds.\n\n` +
-        `To execute: call claim_sol with dry_run: false and execution_token: "${token}"`;
-
-      // Stake accounts note
+    const excluded = normalizeExclude(exclude);
+    const candidateTokens = tokensResp.tokens.filter(t => !t.isFrozen &&
+      (token_accounts ? token_accounts.includes(t.pubKey) : t.amountUi === 0) && !isExcludedByNameOrSymbol(t, excluded));
+    const candidateBuffers = buffersResp.buffers.filter(b => buffer_accounts?.includes(b.pubkey));
+    if (token_accounts?.some(address => !candidateTokens.some(t => t.pubKey === address)) ||
+        buffer_accounts?.some(address => !candidateBuffers.some(b => b.pubkey === address))) {
+      throw new ClaimError('Selected accounts are unavailable or excluded. Obtain a fresh dry run with a valid selection.');
+    }
+    const verified = await signer.inspectCleanup(walletPubkey, candidateTokens, candidateBuffers, token_accounts);
+    if (verified.tokens.length + verified.buffers.length === 0) {
+      let msg =
+        'No token or buffer accounts to claim for this wallet.';
       if (stakeInfo && stakeInfo.count > 0) {
-        text += `\n\nNote: ~${formatSol(stakeInfo.estimatedSol)} also claimable from ${stakeInfo.count} stake account(s) at ${url}`;
+        msg += `\n\nThis wallet may have stake account claims at ${url}`;
       }
-
-      return { content: [{ type: 'text', text }] };
-    }
-
-    // ---- EXECUTION ----
-    if (!execution_token) {
       return {
-        content: [
-          {
-            type: 'text',
-            text: 'Run claim_sol with dry_run first to get an execution token.',
-          },
-        ],
+        content: [{ type: 'text', text: msg }],
         isError: true,
       };
     }
 
-    const entry = validateToken(execution_token, wallet);
-    const normalizedExclude = normalizeExclude(exclude);
-    const claimableTokens = entry.tokens.filter((t) => !t.isFrozen);
-    const filteredTokens = claimableTokens.filter(
-      (t) => !isExcludedByNameOrSymbol(t, normalizedExclude),
-    );
-    const excludedTokenCount = claimableTokens.length - filteredTokens.length;
-
-    if (filteredTokens.length === 0 && entry.buffers.length === 0) {
-      return {
-        content: [
-          {
-            type: 'text',
-            text: 'All claimable token accounts were excluded and there are no buffer accounts left to claim.',
-          },
-        ],
-        isError: true,
-      };
-    }
-
-    const plan = normalizedExclude.size > 0
-      ? await txBuilder.buildClaimPlan(
-        filteredTokens,
-        entry.buffers,
-        walletPubkey,
-        entry.maxTransactions,
-        entry.plan.stakeInfo,
-      )
-      : entry.plan;
-
-    // Pre-sign validation
-    txBuilder.validateTransactions(plan.transactions, walletPubkey);
-
-    // Balance snapshot (pre)
-    const preBal = await signer.getBalance(walletPubkey);
-
-    // Sign + send + confirm
-    const results = await signer.signAndSendBatch(
-      plan.transactions,
-      config.keypair!,
+    const plan = await txBuilder.buildClaimPlan(
+      verified.tokens,
+      verified.buffers,
+      walletPubkey,
+      max_transactions,
+      stakeInfo,
     );
 
-    // Balance snapshot (post)
-    const postBal = await signer.getBalance(walletPubkey);
+    const selectedTokenSet = new Set(plan.selectedTokenPubkeys);
+    const selectedTokens = verified.tokens.filter((t) =>
+      selectedTokenSet.has(t.pubKey),
+    );
+    let text =
+      `Dry run — no transactions sent.\n\n` +
+      `Estimated claim: ${formatSol(plan.estimatedSol)} from ` +
+      `${plan.tokenAccountCount} token accounts and ${plan.bufferAccountCount} buffer accounts ` +
+      `(token fee is max(2% rounded down, gross above 0.002 SOL); buffers use a 5% fee; network fees excluded).\n` +
+      `Transactions needed: ${plan.transactionsNeeded}` +
+      (plan.cappedByMaxTx
+        ? ` of ${plan.totalTransactionsNeeded} (limited by max_transactions: ${max_transactions}` +
+          ` — ${plan.totalTokenAccountCount - plan.tokenAccountCount} token and ` +
+          `${plan.totalBufferAccountCount - plan.bufferAccountCount} buffer accounts deferred)`
+        : '');
 
-    // Consume token
-    consumeToken(execution_token, wallet);
-
-    const confirmed = results.filter((r) => r.status === 'confirmed');
-    const failed = results.filter((r) => r.status === 'failed');
-    const netSol = (postBal - preBal) / 1e9;
-
-    let text: string;
-
-    if (failed.length === 0) {
-      text =
-        `Claimed across ${confirmed.length} transactions from ${plan.tokenAccountCount} token accounts and ${plan.bufferAccountCount} buffer accounts.\n\n` +
-        `Confirmed net: ${formatSol(Math.max(0, netSol))} (wallet balance change, inclusive of priority fees)\n\n` +
-        `Signatures:\n${confirmed.map((r, i) => `${i + 1}. ${r.signature}`).join('\n')}`;
-    } else if (confirmed.length > 0) {
-      text =
-        `Partial claim: ${confirmed.length}/${results.length} txs confirmed.\n\n` +
-        `Confirmed net so far: ${formatSol(Math.max(0, netSol))} (wallet balance change)\n\n` +
-        `Successful:\n${confirmed.map((r, i) => `${i + 1}. ${r.signature}`).join('\n')}\n\n` +
-        `Failed:\n${failed.map((r, i) => `${i + 1}. ${r.error || 'unknown'}`).join('\n')}\n\n` +
-        `Run claim_sol again (dry_run first) to retry.`;
-    } else {
-      text =
-        `All ${results.length} transactions failed.\n\n` +
-        `${failed.map((r, i) => `${i + 1}. ${r.error || 'unknown'}`).join('\n')}\n\n` +
-        `Run claim_sol again (dry_run first) to retry.`;
+    // Frozen accounts warning
+    if (plan.skippedFrozenCount > 0) {
+      text += `\n\n${plan.skippedFrozenCount} frozen account(s) skipped (cannot be closed).`;
     }
 
-    if (excludedTokenCount > 0) {
-      text = `Excluded ${excludedTokenCount} token account(s) by name/symbol filter.\n\n${text}`;
-    }
+    text += buildTokenPreview(selectedTokens);
 
-    if (plan.stakeInfo && plan.stakeInfo.count > 0) {
-      text += `\n\n~${formatSol(plan.stakeInfo.estimatedSol)} also claimable from stake accounts at ${url}`;
-    }
+    text += '\n\nPreview only. Cleanup execution is unavailable until checked program instructions and SDK builders are available.';
 
-    text += `\n\nWallet: https://solscan.io/account/${wallet}`;
+    // Stake accounts note
+    if (stakeInfo && stakeInfo.count > 0) {
+      text += `\n\nNote: ~${formatSol(stakeInfo.estimatedSol)} also claimable from ${stakeInfo.count} stake account(s) at ${url}`;
+    }
 
     return { content: [{ type: 'text', text }] };
+
   } catch (err) {
     if (
       err instanceof WalletValidationError ||
-      err instanceof ClaimError
+      err instanceof ClaimError || err instanceof ScannerError
     ) {
       return {
         content: [{ type: 'text', text: err.message }],
@@ -516,8 +299,7 @@ export async function handleClaim(
         {
           type: 'text',
           text:
-            (err as Error).message ||
-            'Unexpected error. Visit https://unclaimedsol.com directly.',
+            'PREVIEW_FAILED: could not inspect this wallet. Please try again.',
         },
       ],
       isError: true,

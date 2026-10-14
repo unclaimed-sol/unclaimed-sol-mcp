@@ -44,7 +44,7 @@ export function getClaimStakesToolDefinition(keypairWallet?: string) {
     annotations: {
       title: 'Claim Deactivated Stakes',
       readOnlyHint: false,
-      destructiveHint: false,
+      destructiveHint: true,
       idempotentHint: false,
       openWorldHint: true,
     },
@@ -84,7 +84,7 @@ const InputSchema = z.object({
   wallet_address: z.string().optional(),
   dry_run: z.boolean().default(true),
   execution_token: z.string().optional(),
-  stake_accounts: z.array(z.string()).optional(),
+  stake_accounts: z.array(z.string().max(44)).max(256).refine(a => new Set(a).size === a.length, "Duplicate stake accounts").optional(),
 });
 
 export async function handleClaimStakes(
@@ -128,6 +128,10 @@ export async function handleClaimStakes(
         };
       }
 
+      const previewTransactions = buildTxResp.transactions.map(b64 => Transaction.from(Buffer.from(b64, 'base64')));
+      validateTransactionPrograms(previewTransactions, walletPubkey, STAKES_FEE_BPS,
+        buildTxResp.totalWithdrawableLamports, undefined, undefined, 'stakes');
+      await signer.verifyStakes(previewTransactions, walletPubkey, stake_accounts);
       const token = tokenStore.generate(wallet, buildTxResp);
 
       let text =
@@ -159,7 +163,7 @@ export async function handleClaimStakes(
       };
     }
 
-    const buildTxResponse = tokenStore.validate(execution_token, wallet);
+    const buildTxResponse = tokenStore.take(execution_token, wallet);
 
     // Deserialize transactions
     const transactions = buildTxResponse.transactions.map((b64) =>
@@ -175,7 +179,10 @@ export async function handleClaimStakes(
       walletPubkey,
       STAKES_FEE_BPS,
       buildTxResponse.totalWithdrawableLamports,
+      undefined, undefined, 'stakes',
     );
+
+    await signer.verifyStakes(transactions, walletPubkey);
 
     // Balance snapshot (pre)
     const preBal = await signer.getBalance(walletPubkey);
@@ -187,34 +194,37 @@ export async function handleClaimStakes(
     );
 
     // Balance snapshot (post)
-    const postBal = await signer.getBalance(walletPubkey);
+    const postBal = await signer.getBalance(walletPubkey).catch(() => null);
 
-    // Consume token
-    tokenStore.consume(execution_token, wallet);
 
     const confirmed = results.filter((r) => r.status === 'confirmed');
-    const failed = results.filter((r) => r.status === 'failed');
-    const netSol = (postBal - preBal) / 1e9;
+    const failed = results.filter((r) => r.status !== 'confirmed');
+    const netSol = postBal === null ? null : (postBal - preBal) / 1e9;
 
     let text: string;
 
     if (failed.length === 0) {
       text =
         `Stakes claimed across ${confirmed.length} transaction(s) from ${buildTxResponse.stakeCount} stake account(s).\n\n` +
-        `Confirmed net: ${formatSol(Math.max(0, netSol))} (wallet balance change, inclusive of fees)\n\n` +
+        `Confirmed net: ${(netSol === null ? 'unavailable (balance RPC failed; see signatures)' : formatSol(Math.max(0, netSol)))} (wallet balance change, inclusive of fees)\n\n` +
         `Signatures:\n${confirmed.map((r, i) => `${i + 1}. ${r.signature}`).join('\n')}`;
     } else if (confirmed.length > 0) {
       text =
         `Partial claim: ${confirmed.length}/${results.length} txs confirmed.\n\n` +
-        `Confirmed net so far: ${formatSol(Math.max(0, netSol))} (wallet balance change)\n\n` +
+        `Confirmed net so far: ${(netSol === null ? 'unavailable (balance RPC failed; see signatures)' : formatSol(Math.max(0, netSol)))} (wallet balance change)\n\n` +
         `Successful:\n${confirmed.map((r, i) => `${i + 1}. ${r.signature}`).join('\n')}\n\n` +
-        `Failed:\n${failed.map((r, i) => `${i + 1}. ${r.error || 'unknown'}`).join('\n')}\n\n` +
+        `Failed:\n${failed.map((r, i) => `${i + 1}. ${r.error || 'unknown'}${r.signature ? ` — ${r.signature}` : ''}`).join('\n')}\n\n` +
         `Run claim_stakes again (dry_run first) to retry.`;
     } else {
       text =
         `All ${results.length} transaction(s) failed.\n\n` +
-        `${failed.map((r, i) => `${i + 1}. ${r.error || 'unknown'}`).join('\n')}\n\n` +
+        `${failed.map((r, i) => `${i + 1}. ${r.error || 'unknown'}${r.signature ? ` — ${r.signature}` : ''}`).join('\n')}\n\n` +
         `Run claim_stakes again (dry_run first) to retry.`;
+    }
+
+    if (results.some(result => result.status === 'unknown')) {
+      text = `Submission outcome is uncertain. Do not assume these transactions failed. Check the signatures before a fresh dry run.\n\n` +
+        results.map(result => `${result.status}: ${result.signature} ${result.error ?? ''}`).join('\n');
     }
 
     text += `\n\nWallet: https://solscan.io/account/${wallet}`;
@@ -246,8 +256,7 @@ export async function handleClaimStakes(
         {
           type: 'text',
           text:
-            (err as Error).message ||
-            `Unexpected error. Visit ${WEBSITE_URL} directly.`,
+            'CLAIM_FAILED: request could not be completed. Obtain a fresh dry run; check any submitted signatures first.',
         },
       ],
       isError: true,

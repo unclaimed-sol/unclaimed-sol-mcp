@@ -87,16 +87,20 @@ export function loadConfig(): Config {
 
   // API URL allowlist + HTTPS enforcement for claim mode
   const claimEnabled = keypair !== null;
-  if (claimEnabled) {
+  if (claimEnabled || apiKey) {
     const parsed = new URL(apiUrl);
-    if (!API_URL_ALLOWLIST.includes(parsed.hostname)) {
+    const developmentOverride = process.env.UNCLAIMED_SOL_ALLOW_DEV_API === 'true';
+    if (parsed.username || parsed.password || parsed.search || parsed.hash) {
+      throw new Error('UNCLAIMED_SOL_API_URL must not contain credentials, query parameters, or fragments.');
+    }
+    if (!developmentOverride && !API_URL_ALLOWLIST.includes(parsed.hostname)) {
       throw new Error(
-        `API URL hostname "${parsed.hostname}" not in allowlist for claim mode. Allowed: ${API_URL_ALLOWLIST.join(', ')}`,
+        'UNCLAIMED_SOL_API_URL must use the production host unclaimedsol.com when signing or using an API key.',
       );
     }
     const isLocal =
       parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1';
-    if (parsed.protocol !== 'https:' && !isLocal) {
+    if (parsed.protocol !== 'https:' && !(developmentOverride && isLocal && parsed.protocol === 'http:')) {
       throw new Error(
         'UNCLAIMED_SOL_API_URL must use HTTPS in claim mode (MITM risk). ' +
           'HTTP is only allowed for localhost/127.0.0.1.',
@@ -105,4 +109,9 @@ export function loadConfig(): Config {
   }
 
   return { apiUrl, apiKey, keypair, rpcUrl, priorityFee, claimEnabled };
+}
+
+/** Never log URL paths, credentials, queries, or fragments. */
+export function logHost(value: string): string {
+  try { return new URL(value).hostname; } catch { return '[invalid URL]'; }
 }

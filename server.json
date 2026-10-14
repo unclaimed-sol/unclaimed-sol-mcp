@@ -34,13 +34,19 @@
           "name": "SOLANA_RPC_URL",
           "description": "Solana RPC endpoint. Defaults to the public mainnet-beta RPC.",
           "isRequired": false,
-          "isSecret": false
+          "isSecret": true
         },
         {
           "name": "UNCLAIMED_SOL_API_URL",
           "description": "Backend API URL. Defaults to https://unclaimedsol.com.",
           "isRequired": false,
           "isSecret": false
+        },
+        {
+          "name": "UNCLAIMED_SOL_API_KEY",
+          "description": "Optional backend API key. Requires an approved HTTPS API host.",
+          "isRequired": false,
+          "isSecret": true
         }
       ]
     }

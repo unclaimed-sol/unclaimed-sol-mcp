@@ -317,15 +317,15 @@ describe('TransactionBuilder.buildClaimPlan', () => {
   it('batches tokens at TOKEN_PAIRS_PER_IX (12) per instruction', async () => {
     // 25 tokens → 3 instructions (12 + 12 + 1), 3 txs (1 ix per tx)
     const tokens = Array.from({ length: 25 }, () => makeToken());
-    const plan = await builder.buildClaimPlan(tokens, [], wallet, 100);
+    const plan = await builder.buildClaimPlan(tokens, [], wallet, 25);
     expect(plan.transactionsNeeded).toBe(3);
     expect(plan.tokenAccountCount).toBe(25);
   });
 
-  it('batches buffers at BUFFERS_PER_IX (25) per instruction', async () => {
+  it('batches buffers at BUFFERS_PER_IX (20) per instruction', async () => {
     // 60 buffers → 3 instructions (25 + 25 + 10), 3 txs
     const buffers = Array.from({ length: 60 }, () => makeBuffer());
-    const plan = await builder.buildClaimPlan([], buffers, wallet, 100);
+    const plan = await builder.buildClaimPlan([], buffers, wallet, 25);
     expect(plan.transactionsNeeded).toBe(3);
     expect(plan.bufferAccountCount).toBe(60);
   });
@@ -345,8 +345,8 @@ describe('TransactionBuilder.buildClaimPlan', () => {
     ); // each 1 SOL
     // Only take 2 txs → 24 tokens covered (12 + 12)
     const plan = await builder.buildClaimPlan(tokens, [], wallet, 2);
-    // 24 tokens × 1 SOL each = 24 SOL
-    expect(plan.estimatedSol).toBe(24);
+    // 24 tokens × 0.002 SOL net each = 0.048 SOL
+    expect(plan.estimatedSol).toBe(0.048);
     expect(plan.tokenAccountCount).toBe(24);
   });
 
@@ -377,7 +377,7 @@ describe('TransactionBuilder.buildClaimPlan', () => {
     expect(plan.bufferAccountCount).toBe(3);
     // tokens: 1 ix (5 < 12), buffers: 1 ix (3 < 25) → 2 txs
     expect(plan.transactionsNeeded).toBe(2);
-    const expectedLamports = 5 * 1_000_000 + 3 * 2_000_000;
+    const expectedLamports = 5 * 980_000 + 3 * 1_900_000;
     expect(plan.estimatedSol).toBeCloseTo(expectedLamports / 1e9, 9);
   });
 

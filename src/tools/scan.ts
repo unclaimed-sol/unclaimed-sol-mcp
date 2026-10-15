@@ -11,7 +11,6 @@ import { WEBSITE_URL } from '../constants.js';
 
 const InputSchema = z.object({
   wallet_address: z.string().optional(),
-  include_explicit_candidates: z.boolean().default(false),
 });
 
 const scanCache = new ScanCache<{
@@ -39,7 +38,6 @@ export function getScanToolDefinition(keypairWallet?: string) {
     inputSchema: {
       type: 'object' as const,
       properties: {
-        include_explicit_candidates: { type: 'boolean', default: false, description: 'List positive token accounts and buffers for manual selection. These are candidates, never automatic approvals.' },
         wallet_address: {
           type: 'string',
           description: walletDesc,
@@ -56,7 +54,7 @@ export async function handleScan(
   scanner: ScannerService,
 ): Promise<{ content: { type: string; text: string }[]; isError?: boolean }> {
   try {
-    const { wallet_address, include_explicit_candidates } = InputSchema.parse(args ?? {});
+    const { wallet_address } = InputSchema.parse(args ?? {});
     const resolvedAddress =
       wallet_address || config.keypair?.publicKey.toBase58();
     if (!resolvedAddress) {
@@ -93,15 +91,6 @@ export async function handleScan(
     }
 
     const result = buildResponse(data, config.claimEnabled, url, cacheAgeSec);
-    if (include_explicit_candidates) {
-      const [tokens, buffers] = await Promise.all([
-        scanner.getClaimableTokens(wallet, true), scanner.getClaimableBuffers(wallet),
-      ]);
-      result.content.push({ type: 'text', text: 'Explicit candidates (backend discovery only; amounts and authority are verified during the dry run):\n' + JSON.stringify({
-        tokens: tokens.tokens.filter(t => t.amountUi > 0 && !t.isFrozen).map(t => ({ address: t.pubKey, mint: t.mintKey, reported_balance: t.amountUi, automatic: false })),
-        buffers: buffers.buffers.map(b => ({ address: b.pubkey, reported_lamports: String(b.lamports), automatic: false })),
-      }) });
-    }
     return result;
   } catch (err) {
     if (err instanceof WalletValidationError) {

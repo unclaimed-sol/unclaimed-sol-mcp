@@ -20,8 +20,6 @@ export interface TokenAccountInfo {
   decimals?: number; // Token decimals
   programOwnerId: string; // SPL Token or Token-2022 program ID
   isNft?: boolean; // true when decimals=0
-  amountBaseUnits?: string; // Populated from the trusted RPC, never amountUi
-  isNative?: boolean;
 }
 
 /**
@@ -330,10 +328,9 @@ export class ScannerService {
    * POST /api/get-claimable-tokens
    * Used by claim_sol.
    *
-   * Safe mode is the default. Explicit candidate discovery can request max mode;
-   * backend eligibility is never user approval.
+   * Preserve the published backend safe-mode discovery contract.
    */
-  async getClaimableTokens(wallet: string, includeExplicitCandidates = false): Promise<TokensResponse> {
+  async getClaimableTokens(wallet: string): Promise<TokensResponse> {
     const response = await fetch(
       `${this.config.apiUrl}/api/get-claimable-tokens`,
       {
@@ -342,7 +339,7 @@ export class ScannerService {
         headers: this.buildHeaders(),
         body: JSON.stringify({
           publicKey: wallet,
-          maxClaimMode: includeExplicitCandidates, // Discovery only; selection and RPC verification happen locally
+          maxClaimMode: false,
         }),
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       },

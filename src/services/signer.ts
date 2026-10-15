@@ -2,8 +2,6 @@ import { Connection, Keypair, Transaction, PublicKey } from '@solana/web3.js';
 import bs58 from 'bs58';
 import { verifyRewardFees } from './reward-validation.js';
 import { verifyStakeAccounts } from './stake-validation.js';
-import { inspectCleanupTargets } from './cleanup-validation.js';
-import { TokenAccountInfo, BufferAccountInfo } from './scanner.js';
 import { Config } from '../config.js';
 
 export interface SendResult {
@@ -21,10 +19,6 @@ export class SignerService {
 
   async getBalance(wallet: PublicKey): Promise<number> {
     return this.connection.getBalance(wallet, 'confirmed');
-  }
-
-  async inspectCleanup(wallet: PublicKey, tokens: TokenAccountInfo[], buffers: BufferAccountInfo[], explicitTokens: string[] = []) {
-    return inspectCleanupTargets(this.connection, wallet, tokens, buffers, explicitTokens);
   }
 
   async verifyRewards(transactions: Transaction[], wallet: PublicKey): Promise<void> {

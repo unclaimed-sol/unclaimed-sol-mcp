@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.0.0 - Unreleased
+
+- Require Node.js 20 or newer; signing/API-key configurations now require the production HTTPS host unless the development override is explicitly enabled.
+- Preserve token/buffer cleanup's dry-run and execution-token flow, including execution-time exclusions and the existing backend-trust model. Checked cleanup instructions and exact amount approvals are deferred.
+- Consume execution tokens atomically, sign each unsent transaction with a fresh blockhash, and never retry an ambiguous submission. Preserve signatures when post-submit balance reads fail.
+- Repair buffer/stake response compatibility, validate Pump/PumpSwap rewards and stakes with RPC data, and restrict reward execution to supported sources.
+- Bound requests, transaction sizes and batches; redact endpoint logs, pin runtime dependencies, and add production-audit CI.
+
+
 ## 1.3.1 - 2026-08-28
 
 - Recognize common Solana blockhash-expiry responses and rebuild/re-sign transactions with a fresh blockhash.

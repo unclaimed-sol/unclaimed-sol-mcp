@@ -190,7 +190,7 @@ export class TransactionBuilder {
     }
 
     // ---- ESTIMATE SOL (only for accounts covered by used transactions) ----
-    // RPC-verified account lamports are gross. Apply the deployed fee policy.
+    // Backend account lamports are gross. Apply the deployed fee policy.
     const usedMeta = usedGroups.flat();
     const coveredTokenCount = usedMeta.reduce((s, m) => s + m.tokenCount, 0);
     const coveredBufferCount = usedMeta.reduce((s, m) => s + m.bufferCount, 0);

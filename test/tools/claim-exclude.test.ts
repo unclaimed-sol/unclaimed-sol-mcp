@@ -1,69 +1,158 @@
 import { describe, it, expect, vi } from 'vitest';
-import { Keypair } from '@solana/web3.js';
-import { handleClaim, getClaimToolDefinition } from '../../src/tools/claim.js';
-import { TransactionBuilder } from '../../src/services/transaction.js';
+import { Keypair, Transaction } from '@solana/web3.js';
+import { handleClaim } from '../../src/tools/claim.js';
 import type { Config } from '../../src/config.js';
+import type {
+  TokenAccountInfo,
+  BuffersResponse,
+  TokensResponse,
+} from '../../src/services/scanner.js';
+import type { ClaimPlan } from '../../src/services/transaction.js';
 
-function setup(positive = false) {
-  const keypair = Keypair.generate();
-  const token = { pubKey: Keypair.generate().publicKey.toBase58(), mintKey: Keypair.generate().publicKey.toBase58(), amountUi: positive ? 1 : 0, amountBaseUnits: positive ? '10' : '0', lamports: 2_039_280, isFrozen: false, symbol: 'TEST', programOwnerId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' };
-  const buffer = { pubkey: Keypair.generate().publicKey.toBase58(), lamports: 2_000_000, authority: keypair.publicKey.toBase58(), dataLength: 37, dataSha256: 'a'.repeat(64) };
-  const config: Config = { apiUrl: 'https://unclaimedsol.com', apiKey: null, keypair, rpcUrl: 'https://api.mainnet-beta.solana.com', priorityFee: 1000, claimEnabled: true };
-  const scanner = { getClaimableTokens: vi.fn(async () => ({ tokens: [token] })), getClaimableBuffers: vi.fn(async () => ({ buffers: [buffer] })), getClaimableStakes: vi.fn(async () => ({count:0,estimatedSol:0})) };
-  const signer = { inspectCleanup: vi.fn(async (_wallet, tokens, buffers) => ({ tokens: tokens.map(t=>({...t})), buffers: buffers.map(b=>({...b})) })), getBalance: vi.fn().mockResolvedValue(1_000_000_000), signAndSendBatch: vi.fn(async () => [{status:'confirmed',signature:'test-signature'}]) };
-  const run = (args: object) => handleClaim(args, config, scanner as any, new TransactionBuilder(config), signer as any);
-  return { run, scanner, signer, token, buffer };
+function makeToken(
+  symbol: string,
+  pubKey: string,
+  mintKey: string,
+): TokenAccountInfo {
+  return {
+    pubKey,
+    mintKey,
+    amountUi: 0,
+    isFrozen: false,
+    lamports: 1_000_000,
+    symbol,
+    name: symbol,
+    decimals: 9,
+    programOwnerId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+  };
 }
-describe('cleanup previews', () => {
-  it('returns a preview without an execution token or approval instructions', async () => {
-    const { run, scanner, signer } = setup();
-    const result = await run({});
-    expect(result.isError).not.toBe(true);
-    expect(result.content[0].text).toContain('Preview only');
-    expect(result.content[0].text).not.toMatch(/Execution token:|required_.*approvals|Echo these/);
-    expect(scanner.getClaimableBuffers).not.toHaveBeenCalled();
-    expect(signer.signAndSendBatch).not.toHaveBeenCalled();
-  });
-  it('previews explicit positive-token and buffer selections', async () => {
-    const { run, token, buffer } = setup(true);
-    const result = await run({token_accounts:[token.pubKey],buffer_accounts:[buffer.pubkey]});
-    expect(result.isError).not.toBe(true);
-    expect(result.content[0].text).toContain('1 token accounts and 1 buffer accounts');
-    expect(result.content[0].text).toContain('base units: 10');
-  });
-  it('reports skipped automatic candidates alongside eligible targets', async () => {
-    const {run,signer,token}=setup();
-    signer.inspectCleanup.mockResolvedValueOnce({tokens:[token],buffers:[],skippedTokenCount:2} as any);
-    const result = await run({});
-    expect(result.isError).not.toBe(true);
-    expect(result.content[0].text).toContain('Skipped 2 ineligible automatic');
-  });
-  it('reports skipped candidates even when none remain eligible', async () => {
-    const {run,signer}=setup();
-    signer.inspectCleanup.mockResolvedValueOnce({tokens:[],buffers:[],skippedTokenCount:1} as any);
-    expect((await run({})).content[0].text).toContain('Skipped 1 ineligible automatic');
-  });
-  it('does not automatically select positive tokens', async () => {
-    expect((await setup(true).run({})).isError).toBe(true);
-  });
-  it('honors symbol exclusions during preview', async () => {
-    const { run } = setup();
-    expect((await run({exclude:['test']})).content[0].text).toContain('No token or buffer accounts');
-  });
-  it.each([{}, {execution_token:'old-token'}, {approved_token_accounts:[]}])('rejects execution before any RPC or backend work: %j', async extra => {
-    const { run, scanner, signer } = setup();
-    const result = await run({dry_run:false,...extra});
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('CHECKED_CLEANUP_UNAVAILABLE');
-    expect(scanner.getClaimableTokens).not.toHaveBeenCalled();
-    expect(signer.inspectCleanup).not.toHaveBeenCalled();
-    expect(signer.signAndSendBatch).not.toHaveBeenCalled();
-  });
-  it('advertises the supported read-only interface', () => {
-    const tool = getClaimToolDefinition();
-    expect(tool.annotations.readOnlyHint).toBe(true);
-    expect(tool.inputSchema.properties).not.toHaveProperty('execution_token');
-    expect(tool.inputSchema.properties).not.toHaveProperty('approved_token_accounts');
-    expect(tool.inputSchema.properties).not.toHaveProperty('approved_buffer_accounts');
+
+function makePlan(
+  selectedTokenPubkeys: string[],
+  totalTokenAccountCount: number,
+): ClaimPlan {
+  return {
+    tokenAccountCount: selectedTokenPubkeys.length,
+    bufferAccountCount: 0,
+    selectedTokenPubkeys,
+    selectedBufferPubkeys: [],
+    totalTokenAccountCount,
+    totalBufferAccountCount: 0,
+    estimatedSol: 0.002,
+    transactionsNeeded: 1,
+    totalTransactionsNeeded: 2,
+    transactions: [new Transaction()],
+    cappedByMaxTx: true,
+    skippedFrozenCount: 0,
+    stakeInfo: null,
+  };
+}
+
+describe('claim_sol exclude execution scope', () => {
+  it('applies exclude only within dry-run-selected accounts', async () => {
+    const kp = Keypair.generate();
+    const wallet = kp.publicKey.toBase58();
+
+    const tokenA = makeToken(
+      'AAA',
+      Keypair.generate().publicKey.toBase58(),
+      Keypair.generate().publicKey.toBase58(),
+    );
+    const tokenB = makeToken(
+      'BBB',
+      Keypair.generate().publicKey.toBase58(),
+      Keypair.generate().publicKey.toBase58(),
+    );
+    const tokenC = makeToken(
+      'CCC',
+      Keypair.generate().publicKey.toBase58(),
+      Keypair.generate().publicKey.toBase58(),
+    );
+
+    const buildClaimPlan = vi
+      .fn<(...args: any[]) => Promise<ClaimPlan>>()
+      .mockResolvedValueOnce(
+        makePlan([tokenA.pubKey, tokenB.pubKey], 3),
+      )
+      .mockResolvedValueOnce(
+        makePlan([tokenA.pubKey], 2),
+      );
+
+    const scanner = {
+      getClaimableTokens: vi.fn<(...args: any[]) => Promise<TokensResponse>>(
+        async () => ({
+          claimableSol: 0.003,
+          tokens: [tokenA, tokenB, tokenC],
+          rewardFee: 0.05,
+        }),
+      ),
+      getClaimableBuffers: vi.fn<(...args: any[]) => Promise<BuffersResponse>>(
+        async () => ({
+          claimableSol: 0,
+          buffers: [],
+        }),
+      ),
+      getClaimableStakes: vi.fn(async () => ({ count: 0, estimatedSol: 0 })),
+    } as any;
+
+    const txBuilder = {
+      buildClaimPlan,
+      validateTransactions: vi.fn(),
+    } as any;
+
+    const signer = {
+      getBalance: vi
+        .fn()
+        .mockResolvedValueOnce(1_000_000_000)
+        .mockResolvedValueOnce(1_100_000_000),
+      signAndSendBatch: vi.fn(async () => [
+        { status: 'confirmed', signature: 'sig-1' },
+      ]),
+    } as any;
+
+    const config: Config = {
+      apiUrl: 'https://unclaimedsol.com',
+      apiKey: null,
+      keypair: kp,
+      rpcUrl: 'https://api.mainnet-beta.solana.com',
+      priorityFee: 1_000,
+      claimEnabled: true,
+    };
+
+    const dryRun = await handleClaim(
+      { wallet_address: wallet, dry_run: true, max_transactions: 1 },
+      config,
+      scanner,
+      txBuilder,
+      signer,
+    );
+
+    const tokenMatch = dryRun.content[0].text.match(
+      /Execution token: ([a-f0-9]{32})/,
+    );
+    expect(tokenMatch?.[1]).toBeTruthy();
+    const executionToken = tokenMatch![1];
+
+    await handleClaim(
+      {
+        wallet_address: wallet,
+        dry_run: false,
+        execution_token: executionToken,
+        exclude: ['BBB'],
+      },
+      config,
+      scanner,
+      txBuilder,
+      signer,
+    );
+
+    expect(buildClaimPlan).toHaveBeenCalledTimes(2);
+
+    const secondCallTokens = buildClaimPlan.mock.calls[1][0] as TokenAccountInfo[];
+    const secondCallPubkeys = secondCallTokens.map((t) => t.pubKey);
+
+    expect(secondCallPubkeys).toContain(tokenA.pubKey);
+    expect(secondCallPubkeys).not.toContain(tokenB.pubKey);
+    expect(secondCallPubkeys).not.toContain(tokenC.pubKey);
   });
 });

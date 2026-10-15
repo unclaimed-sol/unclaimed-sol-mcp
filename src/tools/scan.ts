@@ -5,6 +5,8 @@ import { ScanCache } from '../cache.js';
 import {
   validateWalletAddress,
   WalletValidationError,
+  ToolInputError,
+  parseToolInput,
 } from '../validation.js';
 import { formatSol } from '../formatter.js';
 import { WEBSITE_URL } from '../constants.js';
@@ -54,7 +56,7 @@ export async function handleScan(
   scanner: ScannerService,
 ): Promise<{ content: { type: string; text: string }[]; isError?: boolean }> {
   try {
-    const { wallet_address } = InputSchema.parse(args ?? {});
+    const { wallet_address } = parseToolInput(InputSchema, args);
     const resolvedAddress =
       wallet_address || config.keypair?.publicKey.toBase58();
     if (!resolvedAddress) {
@@ -90,10 +92,9 @@ export async function handleScan(
       scanCache.set(wallet, data);
     }
 
-    const result = buildResponse(data, config.claimEnabled, url, cacheAgeSec);
-    return result;
+    return buildResponse(data, config.claimEnabled, url, cacheAgeSec);
   } catch (err) {
-    if (err instanceof WalletValidationError) {
+    if (err instanceof WalletValidationError || err instanceof ToolInputError) {
       return { content: [{ type: 'text', text: err.message }], isError: true };
     }
     return {

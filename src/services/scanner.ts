@@ -30,6 +30,8 @@ export interface TokensResponse {
   claimableSol: number;
   tokens: TokenAccountInfo[];
   rewardFee: number; // REWARD_FEE from backend
+  /** Backend rows beyond MAX_TARGETS, dropped from this response. */
+  omittedCount?: number;
 }
 
 /**
@@ -49,6 +51,8 @@ export interface BufferAccountInfo {
 export interface BuffersResponse {
   claimableSol: number; // userReceives
   buffers: BufferAccountInfo[];
+  /** Backend rows beyond MAX_TARGETS, dropped from this response. */
+  omittedCount?: number;
 }
 
 /**
@@ -190,15 +194,27 @@ const MAX_TRANSACTIONS = 25;
 const amount = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const solAmount = z.number().nonnegative().max(Number.MAX_SAFE_INTEGER / 1e9);
 const address = z.string().regex(/^[1-9A-HJ-NP-Za-km-z]{32,44}$/);
-const boundedTargets = <T extends z.ZodType>(schema: T, key: string) =>
-  z.array(schema).max(MAX_TARGETS).refine(
+const uniqueTargets = <T extends z.ZodType>(schema: T, key: string) =>
+  z.array(schema).refine(
     rows => new Set(rows.map(row => (row as Record<string, unknown>)[key])).size === rows.length,
     'Duplicate targets',
   );
+/** Keep the first MAX_TARGETS rows; the caller reports how many were dropped. */
+function truncateTargets<T>(rows: T[]): { rows: T[]; omittedCount: number } {
+  return rows.length > MAX_TARGETS
+    ? { rows: rows.slice(0, MAX_TARGETS), omittedCount: rows.length - MAX_TARGETS }
+    : { rows, omittedCount: 0 };
+}
+/** Contract mismatches surface as scanner errors, not generic failures. */
+function parseContract<T extends z.ZodType>(schema: T, data: unknown): z.infer<T> {
+  const result = schema.safeParse(data);
+  if (!result.success) throw new ScannerError('INVALID_BACKEND_RESPONSE');
+  return result.data;
+}
 const tokenResponseSchema = z.object({
   claimableSol: solAmount,
   rewardFee: z.number().nonnegative(),
-  tokens: boundedTargets(z.object({
+  tokens: uniqueTargets(z.object({
     pubKey: address, mintKey: address, amountUi: z.number().nonnegative(),
     isFrozen: z.boolean(), lamports: amount,
     programOwnerId: z.enum(['TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb']),
@@ -208,7 +224,7 @@ const tokenResponseSchema = z.object({
 });
 const bufferResponseSchema = z.object({
   claimableSol: solAmount,
-  buffers: boundedTargets(z.object({ address, lamports: amount, dataSize: amount }), 'address'),
+  buffers: uniqueTargets(z.object({ address, lamports: amount, dataSize: amount }), 'address'),
   complete: z.boolean().optional(), cacheStatus: z.string().optional(),
   terminationReason: z.string().optional(),
 });
@@ -240,13 +256,11 @@ async function readBoundedJson(response: Response): Promise<any> {
       if (size > MAX_RESPONSE_BYTES) throw new ScannerError('BACKEND_RESPONSE_TOO_LARGE');
       chunks.push(value);
     }
-    const data = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-    // Only the deployed legacy contract is understood. Do not silently parse a
-    // future version with legacy field defaults. Add v2 schemas with its rollout.
-    if (data && typeof data === 'object' && 'contractVersion' in data) {
-      throw new ScannerError('UNSUPPORTED_CONTRACT_VERSION');
+    try {
+      return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    } catch {
+      throw new ScannerError('INVALID_BACKEND_RESPONSE');
     }
-    return data;
   } finally {
     await reader.cancel().catch(() => {});
     reader.releaseLock();
@@ -298,7 +312,7 @@ export class ScannerService {
       );
     }
 
-    const data = summarySchema.parse(await readBoundedJson(response));
+    const data = parseContract(summarySchema, await readBoundedJson(response));
     const maxClaimableSol = data.maxClaimableSol ?? data.totalClaimableSol;
     if (data.safeModeAssets === null || data.safeTokenCount === null || data.safeClaimAmount === null) {
       return { ...data, totalClaimableSol: 0, assets: 0, tokenCount: 0, maxClaimableSol, safeSummaryAvailable: false };
@@ -349,7 +363,9 @@ export class ScannerService {
       throw new ScannerError('Failed to fetch token accounts.');
     }
 
-    return tokenResponseSchema.parse(await readBoundedJson(response));
+    const data = parseContract(tokenResponseSchema, await readBoundedJson(response));
+    const { rows, omittedCount } = truncateTargets(data.tokens);
+    return { ...data, tokens: rows, ...(omittedCount > 0 ? { omittedCount } : {}) };
   }
 
   /**
@@ -372,13 +388,16 @@ export class ScannerService {
       throw new ScannerError('Failed to fetch buffer accounts.');
     }
 
-    const data = bufferResponseSchema.parse(await readBoundedJson(response));
+    const data = parseContract(bufferResponseSchema, await readBoundedJson(response));
     if (data.complete === false || data.cacheStatus === 'disabled' || data.terminationReason === 'disabled') {
       throw new ScannerError('BUFFER_DISCOVERY_UNAVAILABLE');
     }
-    return { claimableSol: data.claimableSol, buffers: data.buffers.map(buffer => ({
-      pubkey: buffer.address, lamports: buffer.lamports, dataLength: buffer.dataSize,
-    })) };
+    const { rows, omittedCount } = truncateTargets(data.buffers);
+    return {
+      claimableSol: data.claimableSol,
+      buffers: rows.map(buffer => ({ pubkey: buffer.address, lamports: buffer.lamports, dataLength: buffer.dataSize })),
+      ...(omittedCount > 0 ? { omittedCount } : {}),
+    };
   }
 
   /**
@@ -395,10 +414,10 @@ export class ScannerService {
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     if (!response.ok) throw new ScannerError('STAKE_SCAN_UNAVAILABLE');
-    const data = z.object({
-      stakeAccounts: boundedTargets(z.object({ pubkey: address }).passthrough(), 'pubkey'),
+    const data = parseContract(z.object({
+      stakeAccounts: uniqueTargets(z.object({ pubkey: address }).passthrough(), 'pubkey').max(MAX_TARGETS),
       count: amount.max(MAX_TARGETS), totalWithdrawableLamports: amount,
-    }).parse(await readBoundedJson(response));
+    }), await readBoundedJson(response));
     if (data.count !== data.stakeAccounts.length) throw new ScannerError('INVALID_STAKE_COUNT');
     return { count: data.count, estimatedSol: data.totalWithdrawableLamports / 1e9 };
   }
@@ -482,7 +501,7 @@ export class ScannerService {
     }
     const usdcRewards = normalizeUsdcSummary(s.usdcRewards);
     return {
-      transactions: transactionsSchema.parse(raw.transactions),
+      transactions: parseContract(transactionsSchema, raw.transactions),
       rewardsSummary: {
         pumpCashback: numberFromString(s.pumpCashback),
         pumpSwapCashback: numberFromString(s.pumpSwapCashback),
@@ -542,7 +561,7 @@ export class ScannerService {
       throw new ScannerError('Failed to build stake transactions.');
     }
 
-    return stakesBuildSchema.parse(await readBoundedJson(response));
+    return parseContract(stakesBuildSchema, await readBoundedJson(response));
   }
 }
 

@@ -1,8 +1,9 @@
 import { Connection, PublicKey, SYSVAR_CLOCK_PUBKEY, Transaction, VersionedTransaction } from '@solana/web3.js';
 import { STAKE_PROGRAM_ID, TransactionValidationError } from './transaction.js';
 
-/** Recheck each exact withdrawal against the user's trusted RPC. Never infer
- * full inactivity solely from the deactivation epoch (cooldown can span epochs). */
+/** Recheck each exact withdrawal against the user's trusted RPC. Inactivity is
+ * established only by simulating the full withdrawal: cooldown can span epochs,
+ * and a stake deactivated in its activation epoch is withdrawable immediately. */
 export async function verifyStakeAccounts(
   connection: Pick<Connection, 'getAccountInfo' | 'simulateTransaction'>,
   transactions: Transaction[],
@@ -35,11 +36,6 @@ export async function verifyStakeAccounts(
     if ((state !== 1 && state !== 2) || !new PublicKey(data.subarray(44, 76)).equals(wallet) ||
         data.readBigInt64LE(76) > unixTimestamp || data.readBigUInt64LE(84) > epoch) {
       throw new TransactionValidationError('Stake authority or lockup is invalid');
-    }
-    if (state === 2) {
-      if (data.readBigUInt64LE(172) >= epoch) {
-        throw new TransactionValidationError('Stake is not deactivated');
-      }
     }
   }
   // getStakeActivation was removed from Solana RPC. Simulate the complete

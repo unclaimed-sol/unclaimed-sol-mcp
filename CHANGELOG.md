@@ -9,6 +9,9 @@
 - Allow token-only cleanup previews when buffer discovery reports an expected scanner error, with an explicit unavailable notice. Unexpected buffer errors still fail.
 - Repair buffer/stake response compatibility, validate Pump/PumpSwap rewards and stakes with RPC data, and restrict reward execution to supported sources.
 - Bound requests, transaction sizes and batches; redact endpoint logs, pin runtime dependencies, and add production-audit CI.
+- Keep the first 256 backend cleanup targets and report the omitted remainder instead of failing large wallets. Report invalid tool arguments and backend contract mismatches with specific messages.
+- Let the RPC rebroadcast identical signed bytes until expiry; local re-signing remains disabled.
+- Stake inactivity is established by full-withdrawal simulation only, so a stake deactivated in its activation epoch is claimable immediately.
 
 
 ## 1.3.1 - 2026-08-28

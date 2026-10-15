@@ -6,6 +6,7 @@ import {
   ScannerError,
   TokenAccountInfo,
   BufferAccountInfo,
+  BuffersResponse,
 } from '../services/scanner.js';
 import {
   TransactionBuilder,
@@ -17,6 +18,8 @@ import {
   validateWalletAddress,
   verifyWalletMatchesKeypair,
   WalletValidationError,
+  ToolInputError,
+  parseToolInput,
 } from '../validation.js';
 import { formatSol } from '../formatter.js';
 import {
@@ -198,7 +201,7 @@ export async function handleClaim(
       execution_token,
       max_transactions,
       exclude,
-    } = InputSchema.parse(args ?? {});
+    } = parseToolInput(InputSchema, args);
     const resolvedAddress =
       wallet_address || config.keypair?.publicKey.toBase58();
     if (!resolvedAddress) {
@@ -223,13 +226,17 @@ export async function handleClaim(
         scanner.getClaimableBuffers(wallet).catch(err => {
           if (!(err instanceof ScannerError) && !(err instanceof Error && err.message === 'BUFFER_DISCOVERY_UNAVAILABLE')) throw err;
           bufferNotice = 'Buffer discovery unavailable; buffers not included';
-          return { claimableSol: 0, buffers: [] };
+          return { claimableSol: 0, buffers: [] } as BuffersResponse;
         }),
       ]);
 
       const checked = await signer.inspectCleanup(walletPubkey, tokensResp.tokens, buffersResp.buffers);
       tokensResp.tokens = checked.tokens;
       buffersResp.buffers = checked.buffers;
+      const omittedCount = (tokensResp.omittedCount ?? 0) + (buffersResp.omittedCount ?? 0);
+      if (omittedCount > 0) {
+        bufferNotice = `${bufferNotice ? `${bufferNotice}\n\n` : ''}${omittedCount} additional account(s) were not previewed; run claim_sol again after this claim.`;
+      }
 
       // Optionally fetch stake info for reporting
       let stakeInfo: { count: number; estimatedSol: number } | null =
@@ -427,6 +434,7 @@ export async function handleClaim(
   } catch (err) {
     if (
       err instanceof WalletValidationError ||
+      err instanceof ToolInputError ||
       err instanceof ClaimError || err instanceof ExecutionTokenError || err instanceof ScannerError
     ) {
       return {

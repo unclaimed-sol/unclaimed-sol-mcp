@@ -34,6 +34,13 @@ describe('trusted RPC stake revalidation', () => {
     if (change === 'state') data.writeUInt32LE(0, 0);
     await expect(verifyStakeAccounts(connection as any, [tx], wallet)).rejects.toThrow();
   });
+  it('accepts a stake deactivated in the current epoch when full withdrawal simulates', async () => {
+    const { connection, tx, wallet, data } = setup();
+    data.writeBigUInt64LE(100n, 164); // activation epoch == current epoch
+    data.writeBigUInt64LE(100n, 172); // deactivation epoch == current epoch
+    await expect(verifyStakeAccounts(connection as any, [tx], wallet)).resolves.toBeUndefined();
+    expect(connection.simulateTransaction).toHaveBeenCalledTimes(1);
+  });
   it('rejects partially active stake even after its deactivation epoch', async () => {
     const { connection, tx, wallet } = setup();
     connection.simulateTransaction.mockResolvedValue({ context: { slot: 1 }, value: { err: { InstructionError: [0, 'InsufficientFunds'] }, logs: [] } });

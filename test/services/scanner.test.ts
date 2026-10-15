@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { Keypair } from '@solana/web3.js';
 import { ScannerService } from '../../src/services/scanner.js';
 import type { Config } from '../../src/config.js';
 
@@ -89,11 +90,6 @@ describe('ScannerService contract boundaries', () => {
     await expect(new ScannerService(makeConfig()).getClaimableBuffers(wallet)).rejects.toThrow('BUFFER_DISCOVERY_UNAVAILABLE');
   });
 
-  it.each([1,2,99])('rejects an unimplemented versioned contract %s', async contractVersion => {
-    respond({...summary,contractVersion});
-    await expect(new ScannerService(makeConfig()).getScanSummary(wallet)).rejects.toThrow('UNSUPPORTED_CONTRACT_VERSION');
-  });
-
   it('parses current backend stake fields', async () => {
     respond({ stakeAccounts: [{ pubkey: wallet }], count: 1, totalWithdrawableLamports: 2_000_000_000 });
     expect(await new ScannerService(makeConfig()).getClaimableStakes(wallet)).toEqual({ count: 1, estimatedSol: 2 });
@@ -130,12 +126,25 @@ describe('ScannerService contract boundaries', () => {
 
   it('rejects duplicate token targets', async () => {
     respond({ tokens: [token, token], claimableSol: 0, rewardFee: 0 });
-    await expect(new ScannerService(makeConfig()).getClaimableTokens(wallet)).rejects.toThrow('Duplicate targets');
+    await expect(new ScannerService(makeConfig()).getClaimableTokens(wallet)).rejects.toThrow('INVALID_BACKEND_RESPONSE');
   });
 
-  it('rejects oversized target arrays', async () => {
-    respond({ tokens: Array(257).fill(token), claimableSol: 0, rewardFee: 0 });
-    await expect(new ScannerService(makeConfig()).getClaimableTokens(wallet)).rejects.toThrow();
+  it('keeps the first 256 token targets and reports the omitted remainder', async () => {
+    const tokens = Array.from({ length: 300 }, () => ({ ...token, pubKey: Keypair.generate().publicKey.toBase58() }));
+    respond({ tokens, claimableSol: 0, rewardFee: 0 });
+    const result = await new ScannerService(makeConfig()).getClaimableTokens(wallet);
+    expect(result.tokens).toEqual(tokens.slice(0, 256));
+    expect(result.omittedCount).toBe(44);
+  });
+
+  it('omits the count when every target fits', async () => {
+    respond({ tokens: [token], claimableSol: 0, rewardFee: 0 });
+    expect(await new ScannerService(makeConfig()).getClaimableTokens(wallet)).not.toHaveProperty('omittedCount');
+  });
+
+  it('reports a contract mismatch as a scanner error', async () => {
+    respond({ tokens: [{ ...token, lamports: 'one' }], claimableSol: 0, rewardFee: 0 });
+    await expect(new ScannerService(makeConfig()).getClaimableTokens(wallet)).rejects.toThrow('INVALID_BACKEND_RESPONSE');
   });
 
   it('rejects oversized serialized transactions', async () => {

@@ -120,14 +120,14 @@ Claim SOL from deactivated stake accounts. Requires a configured keypair. Uses t
 
 ### Release status
 
-This branch prepares **2.0.0 (unreleased)**. The pinned installation commands below target that release and will work after it is published. To test this PR beforehand, run `npm ci`, `npm run build`, and `node dist/index.js` from the checkout. Merging this PR does not publish the package.
+This branch prepares **2.0.0 (unreleased)**. Until it is published, the package commands below install the latest published release. To test this checkout instead, run `npm ci`, `npm run build`, and point your MCP client at `node dist/index.js`. Merging this branch does not publish the package.
 
 ### Quick install (recommended)
 
 No clone/build required if your MCP client supports package commands:
 
 ```bash
-npx -y @unclaimed-sol/mcp@2.0.0
+npx -y @unclaimed-sol/mcp
 ```
 
 ### Install and build (alternative)
@@ -153,7 +153,7 @@ Using npm package (recommended):
   "mcpServers": {
     "unclaimed-sol": {
       "command": "npx",
-      "args": ["-y", "@unclaimed-sol/mcp@2.0.0"],
+      "args": ["-y", "@unclaimed-sol/mcp"],
       "env": {
         "SOLANA_KEYPAIR_PATH": "~/.config/solana/id.json",
         "SOLANA_RPC_URL": "https://your-rpc-provider.com"
@@ -188,7 +188,7 @@ Using npm package (recommended):
 claude mcp add unclaimed-sol \
   -e SOLANA_KEYPAIR_PATH=~/.config/solana/id.json \
   -e SOLANA_RPC_URL=https://your-rpc-provider.com \
-  -- npx -y @unclaimed-sol/mcp@2.0.0
+  -- npx -y @unclaimed-sol/mcp
 ```
 
 Using local build:
@@ -208,7 +208,7 @@ Using npm package (recommended):
 codex mcp add unclaimed-sol \
   --env SOLANA_KEYPAIR_PATH=~/.config/solana/id.json \
   --env SOLANA_RPC_URL=https://your-rpc-provider.com \
-  -- npx -y @unclaimed-sol/mcp@2.0.0
+  -- npx -y @unclaimed-sol/mcp
 ```
 
 Using local build:
@@ -231,7 +231,7 @@ Using npm package:
   "mcpServers": {
     "unclaimed-sol": {
       "command": "npx",
-      "args": ["-y", "@unclaimed-sol/mcp@2.0.0"]
+      "args": ["-y", "@unclaimed-sol/mcp"]
     }
   }
 }
@@ -270,7 +270,7 @@ Using local build:
 | `UNCLAIMED_SOL_API_KEY` | No | API key sent as `Authorization: Bearer` header. |
 | `SOLANA_KEYPAIR_PATH` | No | Path to Solana keypair JSON file. Enables Vibe Claiming. |
 | `SOLANA_PRIVATE_KEY` | No | Private key as base58 string or JSON byte array. Use `SOLANA_KEYPAIR_PATH` instead when possible. |
-| `SOLANA_RPC_URL` | No | Solana RPC endpoint. Defaults to `https://api.mainnet-beta.solana.com`. A dedicated RPC is recommended for claiming. |
+| `SOLANA_RPC_URL` | No | Solana RPC endpoint. Defaults to `https://api.mainnet-beta.solana.com`. Claim dry runs read account state and simulate stake withdrawals through this endpoint, so a dedicated RPC is strongly recommended for claiming; the public endpoint rate-limits these reads. |
 | `SOLANA_PRIORITY_FEE` | No | Priority fee in microlamports per compute unit. Default: 1,000. Max: 200,000. |
 
 ## Security

@@ -15,6 +15,8 @@ import {
   validateWalletAddress,
   verifyWalletMatchesKeypair,
   WalletValidationError,
+  ToolInputError,
+  parseToolInput,
 } from '../validation.js';
 import { formatSol, formatSolFromLamports } from '../formatter.js';
 import {
@@ -140,7 +142,7 @@ export async function handleClaimRewards(
 ): Promise<{ content: { type: string; text: string }[]; isError?: boolean }> {
   try {
     const { wallet_address, dry_run, execution_token } =
-      InputSchema.parse(args ?? {});
+      parseToolInput(InputSchema, args);
     const resolvedAddress =
       wallet_address || config.keypair?.publicKey.toBase58();
     if (!resolvedAddress) {
@@ -306,6 +308,7 @@ export async function handleClaimRewards(
   } catch (err) {
     if (
       err instanceof WalletValidationError ||
+      err instanceof ToolInputError ||
       err instanceof ExecutionTokenError
     ) {
       return {

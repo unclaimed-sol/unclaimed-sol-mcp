@@ -66,8 +66,10 @@ export class SignerService {
         submissionAttempted = true;
         let returnedSignature: string;
         try {
+          // The RPC may rebroadcast these exact signed bytes until the blockhash
+          // expires; an identical signature cannot land twice.
           returnedSignature = await this.connection.sendRawTransaction(bytes, {
-            skipPreflight: false, preflightCommitment: 'confirmed', maxRetries: 0,
+            skipPreflight: false, preflightCommitment: 'confirmed',
           });
         } catch (err) {
           if (!(err instanceof SendTransactionError)) throw err;

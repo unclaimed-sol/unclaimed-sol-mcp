@@ -1,6 +1,6 @@
 import { Connection, PublicKey } from '@solana/web3.js';
 import { TokenAccountInfo, BufferAccountInfo } from './scanner.js';
-import { ATA_PROGRAM_ID, SPL_TOKEN_PROGRAM_ID } from './transaction.js';
+import { SPL_TOKEN_PROGRAM_ID } from './transaction.js';
 import { BPF_LOADER_UPGRADEABLE } from '../constants.js';
 
 const TOKEN_2022 = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
@@ -22,10 +22,9 @@ export async function inspectCleanupTargets(
         (!a.owner.equals(SPL_TOKEN_PROGRAM_ID) && !a.owner.equals(TOKEN_2022))) return false;
     const d = a.data, mint = new PublicKey(d.subarray(0, 32));
     const close = d.readUInt32LE(129), native = d.readUInt32LE(109);
-    const [ata] = PublicKey.findProgramAddressSync([wallet.toBuffer(), a.owner.toBuffer(), mint.toBuffer()], ATA_PROGRAM_ID);
     return d[108] === 1 && d.readBigUInt64LE(64) === 0n && native <= 1 && close <= 1 &&
       new PublicKey(d.subarray(32, 64)).equals(wallet) && mint.toBase58() === token.mintKey &&
-      a.owner.toBase58() === token.programOwnerId && ata.toBase58() === token.pubKey &&
+      a.owner.toBase58() === token.programOwnerId &&
       (close === 0 || new PublicKey(d.subarray(133, 165)).equals(wallet));
   }); // Empty WSOL follows the same zero-balance rule; funded WSOL is dropped.
   const verifiedBuffers = buffers.filter((_, i) => {

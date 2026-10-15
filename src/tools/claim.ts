@@ -1,6 +1,4 @@
 import { z } from 'zod';
-import { Connection } from '@solana/web3.js';
-import { inspectCleanupTargets } from '../services/cleanup-validation.js';
 import { ExecutionTokenStore, ExecutionTokenError } from '../execution-token-store.js';
 import { Config } from '../config.js';
 import {
@@ -218,13 +216,18 @@ export async function handleClaim(
 
     // ---- DRY RUN ----
     if (dry_run) {
+      let bufferNotice = '';
       // Fetch token + buffer accounts (always fresh, no cache)
       const [tokensResp, buffersResp] = await Promise.all([
         scanner.getClaimableTokens(wallet),
-        scanner.getClaimableBuffers(wallet),
+        scanner.getClaimableBuffers(wallet).catch(err => {
+          if (!(err instanceof ScannerError) && !(err instanceof Error && err.message === 'BUFFER_DISCOVERY_UNAVAILABLE')) throw err;
+          bufferNotice = 'Buffer discovery unavailable; buffers not included';
+          return { claimableSol: 0, buffers: [] };
+        }),
       ]);
 
-      const checked = await inspectCleanupTargets(new Connection(config.rpcUrl), walletPubkey, tokensResp.tokens, buffersResp.buffers);
+      const checked = await signer.inspectCleanup(walletPubkey, tokensResp.tokens, buffersResp.buffers);
       tokensResp.tokens = checked.tokens;
       buffersResp.buffers = checked.buffers;
 
@@ -238,7 +241,7 @@ export async function handleClaim(
       }
 
       if (!tokensResp.tokens.some(t => !t.isFrozen) && buffersResp.buffers.length === 0) {
-        return { content: [{ type: 'text', text: `No token or buffer accounts to claim for this wallet. Skipped ${checked.skipped} ineligible account(s).` }], isError: true };
+        return { content: [{ type: 'text', text: `No token or buffer accounts to claim for this wallet.${checked.skipped > 0 ? ` Skipped ${checked.skipped} ineligible account(s).` : ''}${bufferNotice ? `\n\n${bufferNotice}` : ''}` }], isError: true };
       }
 
       const plan = await txBuilder.buildClaimPlan(
@@ -275,7 +278,7 @@ export async function handleClaim(
       });
 
       let text =
-        `Dry run — no transactions sent. Skipped ${checked.skipped} ineligible account(s).\n\n` +
+        `Dry run — no transactions sent.${checked.skipped > 0 ? ` Skipped ${checked.skipped} ineligible account(s).` : ''}\n\n` +
         `Estimated claim: ${formatSol(plan.estimatedSol)} from ` +
         `${plan.tokenAccountCount} token accounts and ${plan.bufferAccountCount} buffer accounts ` +
         `(token fee is max(2% rounded down, gross above 0.002 SOL); buffers use a 5% fee; network fees excluded).\n` +
@@ -291,6 +294,7 @@ export async function handleClaim(
         text += `\n\n${plan.skippedFrozenCount} frozen account(s) skipped (cannot be closed).`;
       }
 
+      if (bufferNotice) text += `\n\n${bufferNotice}`;
       text += buildTokenPreview(selectedTokens);
 
       // Irreversibility warning
@@ -333,7 +337,7 @@ export async function handleClaim(
     }
 
     const entry = tokenStore.take(execution_token, wallet);
-    const checked = await inspectCleanupTargets(new Connection(config.rpcUrl), walletPubkey, entry.tokens, entry.buffers);
+    const checked = await signer.inspectCleanup(walletPubkey, entry.tokens, entry.buffers);
     const normalizedExclude = normalizeExclude(exclude);
     const claimableTokens = checked.tokens.filter((t) => !t.isFrozen);
     const filteredTokens = claimableTokens.filter(
@@ -346,7 +350,7 @@ export async function handleClaim(
         content: [
           {
             type: 'text',
-            text: `No eligible accounts remain after validation and exclusions. Skipped ${checked.skipped} ineligible account(s).`,
+            text: `No eligible accounts remain after validation and exclusions.${checked.skipped > 0 ? ` Skipped ${checked.skipped} ineligible account(s).` : ''}`,
           },
         ],
         isError: true,
@@ -408,7 +412,7 @@ export async function handleClaim(
         results.map(result => `${result.status}: ${result.signature || '(not submitted)'} ${result.error ?? ''}`).join('\n');
     }
 
-    text = `Skipped ${checked.skipped} ineligible account(s) during execution revalidation.\n\n${text}`;
+    if (checked.skipped > 0) text = `Skipped ${checked.skipped} ineligible account(s) during execution revalidation.\n\n${text}`;
     if (excludedTokenCount > 0) {
       text = `Excluded ${excludedTokenCount} token account(s) by name/symbol filter.\n\n${text}`;
     }

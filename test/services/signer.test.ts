@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { Keypair, SystemProgram, Transaction, TransactionExpiredBlockheightExceededError } from '@solana/web3.js';
+import { Keypair, SystemProgram, Transaction, TransactionExpiredBlockheightExceededError, SendTransactionError } from '@solana/web3.js';
 import bs58 from 'bs58';
 import { SignerService } from '../../src/services/signer.js';
 
@@ -48,6 +48,33 @@ describe('SignerService one-shot submission', () => {
     expect(connection.sendRawTransaction).toHaveBeenCalledTimes(1);
     expect(results[0].error).toContain('SUBMISSION_UNCERTAIN');
     expect(results[1].error).toBe('NOT_SUBMITTED');
+  });
+
+  it('records a typed send rejection without leaking details and continues to the next transaction', async () => {
+    const {signer,connection,keypair,tx}=setup();
+    const next=new Transaction().add(SystemProgram.transfer({fromPubkey:keypair.publicKey,toPubkey:Keypair.generate().publicKey,lamports:2}));
+    connection.sendRawTransaction.mockRejectedValueOnce(new SendTransactionError({action:'simulate',signature:'',transactionMessage:'https://rpc.example/secret',logs:['secret log']}));
+    const results=await signer.signAndSendBatch([tx,next],keypair);
+    expect(results[0]).toMatchObject({status:'failed',error:'PREFLIGHT_REJECTED'});
+    expect(results[0].signature).toMatch(/^[1-9A-HJ-NP-Za-km-z]+$/);
+    expect(results[1].status).toBe('confirmed');
+    expect(JSON.stringify(results)).not.toContain('secret');
+    expect(connection.sendRawTransaction).toHaveBeenCalledTimes(2);
+    expect(connection.confirmTransaction).toHaveBeenCalledTimes(1);
+  });
+  it.each(['generic send','typed confirmation','generic confirmation'])('keeps %s errors uncertain and stops the batch', async phase => {
+    const {signer,connection,keypair,tx}=setup();
+    const next=new Transaction().add(SystemProgram.transfer({fromPubkey:keypair.publicKey,toPubkey:Keypair.generate().publicKey,lamports:2}));
+    const error=phase==='typed confirmation'
+      ? new SendTransactionError({action:'simulate',signature:'',transactionMessage:'private RPC detail'})
+      : new Error('private RPC detail');
+    if(phase==='generic send') connection.sendRawTransaction.mockRejectedValueOnce(error);
+    else connection.confirmTransaction.mockRejectedValueOnce(error);
+    const results=await signer.signAndSendBatch([tx,next],keypair);
+    expect(results[0].status).toBe('unknown');
+    expect(results[1].error).toBe('NOT_SUBMITTED');
+    expect(JSON.stringify(results)).not.toContain('private RPC detail');
+    expect(connection.sendRawTransaction).toHaveBeenCalledTimes(1);
   });
 
   it('gets a fresh blockhash after the previous confirmation and before each send', async () => {

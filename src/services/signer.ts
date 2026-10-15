@@ -1,7 +1,9 @@
-import { Connection, Keypair, Transaction, PublicKey } from '@solana/web3.js';
+import { Connection, Keypair, Transaction, PublicKey, SendTransactionError } from '@solana/web3.js';
 import bs58 from 'bs58';
 import { verifyRewardFees } from './reward-validation.js';
 import { verifyStakeAccounts } from './stake-validation.js';
+import { inspectCleanupTargets } from './cleanup-validation.js';
+import { TokenAccountInfo, BufferAccountInfo } from './scanner.js';
 import { Config } from '../config.js';
 
 export interface SendResult {
@@ -19,6 +21,10 @@ export class SignerService {
 
   async getBalance(wallet: PublicKey): Promise<number> {
     return this.connection.getBalance(wallet, 'confirmed');
+  }
+
+  async inspectCleanup(wallet: PublicKey, tokens: TokenAccountInfo[], buffers: BufferAccountInfo[]) {
+    return inspectCleanupTargets(this.connection, wallet, tokens, buffers);
   }
 
   async verifyRewards(transactions: Transaction[], wallet: PublicKey): Promise<void> {
@@ -58,9 +64,16 @@ export class SignerService {
         const bytes = tx.serialize();
         signature = bs58.encode(tx.signature!);
         submissionAttempted = true;
-        const returnedSignature = await this.connection.sendRawTransaction(bytes, {
-          skipPreflight: false, preflightCommitment: 'confirmed', maxRetries: 0,
-        });
+        let returnedSignature: string;
+        try {
+          returnedSignature = await this.connection.sendRawTransaction(bytes, {
+            skipPreflight: false, preflightCommitment: 'confirmed', maxRetries: 0,
+          });
+        } catch (err) {
+          if (!(err instanceof SendTransactionError)) throw err;
+          results.push({ signature, status: 'failed', error: 'PREFLIGHT_REJECTED' });
+          continue; // The rejected transaction is never retried.
+        }
         if (returnedSignature !== signature) throw new Error('RPC_SIGNATURE_MISMATCH');
         const confirmation = await this.connection.confirmTransaction(
           { signature, blockhash, lastValidBlockHeight }, 'confirmed',

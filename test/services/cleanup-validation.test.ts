@@ -10,8 +10,8 @@ function account() {
   return {data,owner:SPL_TOKEN_PROGRAM_ID,lamports:1,executable:false,rentEpoch:0};
 }
 describe('cleanup RPC gate',()=>{
-  it.each(['missing','program','mint','owner','state','close','noncanonical'])('skips an invalid %s target without losing the valid target',async kind=>{
-    const bad=account(), target={...token,pubKey:kind==='noncanonical'?Keypair.generate().publicKey.toBase58():token.pubKey};
+  it.each(['missing','program','mint','owner','state','close'])('skips an invalid %s target without losing the valid target',async kind=>{
+    const bad=account(), target={...token,pubKey:token.pubKey};
     if(kind==='program') bad.owner=Keypair.generate().publicKey;
     if(kind==='mint') bad.data.fill(0,0,32);
     if(kind==='owner') bad.data.fill(0,32,64);
@@ -20,6 +20,11 @@ describe('cleanup RPC gate',()=>{
     const rpc={getMultipleAccountsInfo:vi.fn(async()=>[kind==='missing'?null:bad,account()])};
     const result=await inspectCleanupTargets(rpc,wallet,[target,token],[]);
     expect(result.tokens).toEqual([token]); expect(result.skipped).toBe(1);
+  });
+  it('accepts an otherwise eligible noncanonical empty token account',async()=>{
+    const target={...token,pubKey:Keypair.generate().publicKey.toBase58()};
+    const rpc={getMultipleAccountsInfo:vi.fn(async()=>[account()])};
+    expect(await inspectCleanupTargets(rpc,wallet,[target],[])).toEqual({tokens:[target],buffers:[],skipped:0});
   });
   it.each(['owner','authority','state'])('skips buffers with invalid %s',async kind=>{
     const data=Buffer.alloc(37); data.writeUInt32LE(kind==='state'?0:1); data[4]=1;

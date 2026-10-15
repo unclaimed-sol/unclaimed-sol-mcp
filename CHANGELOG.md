@@ -5,6 +5,8 @@
 - Require Node.js 20 or newer; signing/API-key configurations now require the production HTTPS host unless the development override is explicitly enabled.
 - Preserve token/buffer cleanup's dry-run and execution-token flow and exclusions. Revalidate cleanup targets via RPC at preview and before signing; skip and count ineligible accounts, accept empty WSOL and drop funded WSOL. Legacy instructions still do not bind amounts atomically.
 - Consume execution tokens atomically, sign each unsent transaction with a fresh blockhash, and never retry an ambiguous submission. Preserve signatures when post-submit balance reads fail.
+- Report typed preflight send rejections as failed and continue with the next transaction; ambiguous send/confirmation errors still stop the batch without retry.
+- Allow token-only cleanup previews when buffer discovery reports an expected scanner error, with an explicit unavailable notice. Unexpected buffer errors still fail.
 - Repair buffer/stake response compatibility, validate Pump/PumpSwap rewards and stakes with RPC data, and restrict reward execution to supported sources.
 - Bound requests, transaction sizes and batches; redact endpoint logs, pin runtime dependencies, and add production-audit CI.
 

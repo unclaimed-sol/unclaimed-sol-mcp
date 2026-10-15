@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { Keypair, Connection, PublicKey } from '@solana/web3.js';
+import { Keypair, PublicKey } from '@solana/web3.js';
 import { handleClaim, getClaimToolDefinition } from '../../src/tools/claim.js';
 import { TransactionBuilder } from '../../src/services/transaction.js';
 import { NATIVE_MINT, deriveAta, SPL_TOKEN_PROGRAM_ID } from '../../src/services/transaction.js';
+import { SignerService } from '../../src/services/signer.js';
+import { ScannerError } from '../../src/services/scanner.js';
 import { BPF_LOADER_UPGRADEABLE } from '../../src/constants.js';
 import type { Config } from '../../src/config.js';
 
@@ -24,17 +26,17 @@ function setup() {
     getClaimableBuffers:vi.fn(async()=>({buffers:[buffer]})),
     getClaimableStakes:vi.fn(async()=>({count:0,estimatedSol:0})),
   };
-  const signer = {
-    getBalance:vi.fn().mockResolvedValue(1_000_000_000),
-    signAndSendBatch:vi.fn().mockResolvedValue([{status:'confirmed',signature:'confirmed-signature'}]),
-  };
+  const signer = new SignerService(config);
+  vi.spyOn(signer, 'getBalance').mockResolvedValue(1_000_000_000);
+  vi.spyOn(signer, 'signAndSendBatch').mockResolvedValue([{status:'confirmed',signature:'confirmed-signature'}]);
   let funded = false;
-  const rpc = vi.spyOn(Connection.prototype, 'getMultipleAccountsInfo').mockImplementation(async keys => keys.map(key => {
+  const rpc = vi.fn(async (keys:PublicKey[]) => keys.map(key => {
     const data = Buffer.alloc(key.toBase58() === buffer.pubkey ? 37 : 165);
     if (data.length === 37) { data.writeUInt32LE(1); data[4]=1; keypair.publicKey.toBuffer().copy(data,5); }
     else { new PublicKey(token.mintKey).toBuffer().copy(data); keypair.publicKey.toBuffer().copy(data,32); data[108]=1; data.writeBigUInt64LE(funded ? 1n : 0n,64); if(token.mintKey===NATIVE_MINT.toBase58()) data.writeUInt32LE(1,109); }
     return {data,owner:data.length===37 ? new PublicKey(BPF_LOADER_UPGRADEABLE) : SPL_TOKEN_PROGRAM_ID,lamports:2_039_280,executable:false,rentEpoch:0};
   }));
+  (signer as unknown as {connection:unknown}).connection = {getMultipleAccountsInfo:rpc};
   const run = (args:object) => handleClaim(args,config,scanner as any,new TransactionBuilder(config),signer as any);
   return {run,scanner,signer,token,rpc,wallet:keypair.publicKey,fund:()=>{funded=true;}};
 }
@@ -50,11 +52,13 @@ describe('published cleanup execution flow',()=>{
     const {run,scanner,signer}=setup();
     const preview=await run({});
     expect(preview.content[0].text).toContain('1 token accounts and 1 buffer accounts');
+    expect(preview.content[0].text).not.toContain('Skipped');
     expect(scanner.getClaimableTokens).toHaveBeenCalledWith(expect.any(String));
     expect(scanner.getClaimableBuffers).toHaveBeenCalledOnce();
     const result=await run({dry_run:false,execution_token:executionToken(preview)});
     expect(result.isError).not.toBe(true);
     expect(result.content[0].text).toContain('confirmed-signature');
+    expect(result.content[0].text).not.toContain('Skipped');
     expect(signer.signAndSendBatch).toHaveBeenCalledOnce();
   });
   it('keeps empty wrapped-SOL candidates compatible with the existing flow',async()=>{
@@ -74,9 +78,10 @@ describe('published cleanup execution flow',()=>{
   it('preserves submitted signatures when the post-balance RPC fails and rejects replay',async()=>{
     const {run,signer}=setup();
     const args={dry_run:false,execution_token:executionToken(await run({}))};
-    signer.getBalance.mockResolvedValueOnce(1_000_000_000).mockRejectedValueOnce(new Error('private endpoint'));
+    vi.mocked(signer.getBalance).mockResolvedValueOnce(1_000_000_000).mockRejectedValueOnce(new Error('private endpoint'));
     const result=await run(args);
     expect(result.content[0].text).toContain('confirmed-signature');
+    expect(result.content[0].text).not.toContain('Skipped');
     expect(result.content[0].text).toContain('balance RPC failed');
     expect(result.content[0].text).not.toContain('private endpoint');
     expect((await run(args)).isError).toBe(true);
@@ -85,7 +90,7 @@ describe('published cleanup execution flow',()=>{
   it('reports uncertain submissions distinctly and does not permit token reuse',async()=>{
     const {run,signer}=setup();
     const args={dry_run:false,execution_token:executionToken(await run({}))};
-    signer.signAndSendBatch.mockResolvedValueOnce([{status:'unknown',signature:'uncertain-signature',error:'SUBMISSION_UNCERTAIN'}]);
+    vi.mocked(signer.signAndSendBatch).mockResolvedValueOnce([{status:'unknown',signature:'uncertain-signature',error:'SUBMISSION_UNCERTAIN'}]);
     const result=await run(args);
     expect(result.content[0].text).toContain('Submission outcome is uncertain');
     expect(result.content[0].text).toContain('uncertain-signature');
@@ -98,7 +103,7 @@ describe('published cleanup execution flow',()=>{
     const result=await run({dry_run:false,execution_token});
     expect(result.content[0].text).toContain('Skipped 1 ineligible');
     expect(rpc.mock.calls.at(-1)![0].map(k=>k.toBase58())).toEqual(rpc.mock.calls[0][0].map(k=>k.toBase58()));
-    expect(signer.signAndSendBatch.mock.calls[0][0]).toHaveLength(1); // buffer only
+    expect(vi.mocked(signer.signAndSendBatch).mock.calls[0][0]).toHaveLength(1); // buffer only
     expect((await run({dry_run:false,execution_token})).isError).toBe(true);
   });
   it('skips funded WSOL while retaining the valid buffer in the preview',async()=>{
@@ -114,6 +119,37 @@ describe('published cleanup execution flow',()=>{
     rpc.mockRejectedValueOnce(new Error('RPC unavailable'));
     expect((await run(args)).isError).toBe(true);
     expect(signer.signAndSendBatch).not.toHaveBeenCalled();
+  });
+  it.each([new ScannerError('BUFFER_DISCOVERY_UNAVAILABLE'), new ScannerError('BUFFER_SCAN_FAILED'), new Error('BUFFER_DISCOVERY_UNAVAILABLE')])('continues with tokens when buffer discovery is unavailable: %s',async error=>{
+    const {run,scanner,signer}=setup();
+    scanner.getClaimableBuffers.mockRejectedValueOnce(error);
+    const preview=await run({});
+    expect(preview.isError).not.toBe(true);
+    expect(preview.content[0].text).toContain('Buffer discovery unavailable; buffers not included');
+    expect(preview.content[0].text).toContain('1 token accounts and 0 buffer accounts');
+    await run({dry_run:false,execution_token:executionToken(preview)});
+    expect(vi.mocked(signer.signAndSendBatch).mock.calls[0][0]).toHaveLength(1);
+  });
+  it('propagates unexpected buffer discovery errors',async()=>{
+    const {run,scanner,signer}=setup();
+    scanner.getClaimableBuffers.mockRejectedValueOnce(new Error('unexpected error'));
+    expect((await run({})).isError).toBe(true);
+    expect(signer.signAndSendBatch).not.toHaveBeenCalled();
+  });
+  it('omits zero-skip text when no targets are discovered',async()=>{
+    const {run,scanner}=setup();
+    scanner.getClaimableTokens.mockResolvedValueOnce({tokens:[]});
+    scanner.getClaimableBuffers.mockResolvedValueOnce({buffers:[]});
+    const result=await run({});
+    expect(result.content[0].text).toContain('No token or buffer accounts');
+    expect(result.content[0].text).not.toContain('Skipped');
+  });
+  it('omits zero-skip text when all eligible targets are excluded at execution',async()=>{
+    const {run,scanner}=setup();
+    scanner.getClaimableBuffers.mockResolvedValueOnce({buffers:[]});
+    const result=await run({dry_run:false,execution_token:executionToken(await run({})),exclude:['TEST']});
+    expect(result.content[0].text).toContain('No eligible accounts remain');
+    expect(result.content[0].text).not.toContain('Skipped');
   });
   it('does not sign without a valid execution token',async()=>{
     const {run,signer}=setup();

@@ -310,7 +310,7 @@ Program ID: `UNCaXzXkR3vp8mbCJyxWUvwuRk5uHgzrwe6jcWPfiUR` (from the pinned SDK).
 
 The pre-sign validator (`validateTransactionPrograms`) provides different levels of protection depending on the claim type:
 
-- **`claim_sol`** — Discovery and estimates use the backend safe-mode response. RPC checks require empty canonical token accounts (including empty WSOL) with the expected mint, program, wallet owner and close authority, or loader-owned buffers with wallet authority. All previewed targets are revalidated before signing. Transactions are built locally and checked against the program/fee-vault allowlist; legacy instructions remain executable.
+- **`claim_sol`** — Discovery and estimates use the backend safe-mode response. RPC checks require empty token accounts (including empty WSOL) with the expected mint, program, wallet owner and close authority, or loader-owned buffers with wallet authority. All previewed targets are revalidated before signing. Transactions are built locally and checked against the program/fee-vault allowlist; legacy instructions remain executable.
 - **`claim_stakes`** — Withdraw amounts are checked against live account balances, wallet withdrawal authority, lockup, sysvars, and full-withdrawal simulation during preview and execution. Fee arithmetic uses bigint.
 - **`claim_rewards`** — Pump/PumpSwap only. Discriminators and account addresses are checked against locally derived PDAs/ATAs. Native SOL and USDC service fees are capped using live source balances, rent reserves and integer arithmetic at preview and execution.
 

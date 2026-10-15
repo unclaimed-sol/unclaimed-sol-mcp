@@ -19,13 +19,13 @@ describe('cleanup RPC boundary',()=>{
     expect(result.tokens[0].amountBaseUnits).toBe('999999999999999999');
     expect(result.tokens[0].lamports).toBe(2039280);
   });
-  it('rejects a positive account mislabelled empty by the backend',async()=>{
+  it('skips a positive account mislabelled empty by the backend',async()=>{
     const {wallet,data,token,connection}=setup();data.writeBigUInt64LE(1n,64);
-    await expect(inspectCleanupTargets(connection as any,wallet,[token],[])).rejects.toThrow('Only empty canonical');
+    expect(await inspectCleanupTargets(connection as any,wallet,[token],[])).toMatchObject({tokens:[],skippedTokenCount:1});
   });
-  it('rejects noncanonical automatic targets',async()=>{
+  it('skips noncanonical automatic targets',async()=>{
     const {wallet,token,connection}=setup(); token.pubKey=Keypair.generate().publicKey.toBase58();
-    await expect(inspectCleanupTargets(connection as any,wallet,[token],[])).rejects.toThrow('canonical');
+    expect(await inspectCleanupTargets(connection as any,wallet,[token],[])).toMatchObject({tokens:[],skippedTokenCount:1});
   });
   it.each(['owner','mint','program','state','closeAuthority','native'])('rejects unsafe %s',async(field)=>{
     const {wallet,data,account,token,connection}=setup();
@@ -36,6 +36,31 @@ describe('cleanup RPC boundary',()=>{
     if(field==='closeAuthority'){data.writeUInt32LE(1,129);Keypair.generate().publicKey.toBuffer().copy(data,133);}
     if(field==='native') data.writeUInt32LE(1,109);
     await expect(inspectCleanupTargets(connection as any,wallet,[token],[],[token.pubKey])).rejects.toThrow();
+  });
+  it.each(['native','closed','noncanonical','positive'])('keeps eligible accounts when an automatic candidate is %s', async kind => {
+    const {wallet,account,token}=setup();
+    const badToken = {...token,pubKey:Keypair.generate().publicKey.toBase58()};
+    const badAccount = {...account,data:Buffer.from(account.data)};
+    if (kind === 'native') {
+      NATIVE_MINT.toBuffer().copy(badAccount.data,0);
+      badAccount.data.writeUInt32LE(1,109);
+      badToken.mintKey=NATIVE_MINT.toBase58();
+    }
+    if (kind === 'positive') badAccount.data.writeBigUInt64LE(1n,64);
+    const connection = {getMultipleAccountsInfo:vi.fn(async()=>[kind === 'closed' ? null : badAccount,account])};
+    const result = await inspectCleanupTargets(connection as any,wallet,[badToken,token],[]);
+    expect(result.tokens.map(t=>t.pubKey)).toEqual([token.pubKey]);
+    expect(result.skippedTokenCount).toBe(1);
+    if (kind === 'native' || kind === 'closed') {
+      await expect(inspectCleanupTargets(connection as any,wallet,[badToken,token],[],[badToken.pubKey])).rejects.toThrow();
+    } else {
+      expect((await inspectCleanupTargets(connection as any,wallet,[badToken,token],[],[badToken.pubKey])).tokens).toHaveLength(2);
+    }
+  });
+  it('does not hide RPC failures as skipped accounts', async () => {
+    const {wallet,token,connection}=setup();
+    connection.getMultipleAccountsInfo.mockRejectedValue(new Error('RPC failed'));
+    await expect(inspectCleanupTargets(connection as any,wallet,[token],[])).rejects.toThrow('RPC failed');
   });
   it('rejects duplicate targets before RPC',async()=>{
     const {wallet,token,connection}=setup();

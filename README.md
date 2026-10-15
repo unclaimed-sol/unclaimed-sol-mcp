@@ -4,7 +4,7 @@
 
 [![npm version](https://img.shields.io/npm/v/%40unclaimed-sol%2Fmcp)](https://www.npmjs.com/package/@unclaimed-sol/mcp)
 [![npm downloads](https://img.shields.io/npm/dm/%40unclaimed-sol%2Fmcp)](https://www.npmjs.com/package/@unclaimed-sol/mcp)
-[![Node >=18](https://img.shields.io/badge/node-%3E%3D18-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
+[![Node >=20](https://img.shields.io/badge/node-%3E%3D20-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![CI](https://github.com/unclaimed-sol/unclaimed-sol-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/unclaimed-sol/unclaimed-sol-mcp/actions/workflows/ci.yml)
 
@@ -85,7 +85,7 @@ Shows locally verified accounts, estimated recovery, fees and transaction count.
 
 **Annotation title:** Claim DeFi Rewards
 
-Claim uncollected DeFi rewards (cashback, creator fees, and more). Requires a configured keypair. Uses the same two-step dry-run/execute flow as `claim_sol`. Only Pump/PumpSwap reward execution is supported, at 3% capped at 1 SOL or 100 USDC.
+Claim uncollected DeFi rewards (cashback, creator fees, and more). Requires a configured keypair. A dry run returns a 60-second single-use `execution_token`; `dry_run: false` with that token executes the claim. Only Pump/PumpSwap reward execution is supported, at 3% capped at 1 SOL or 100 USDC.
 
 **Inputs:** `wallet_address` (optional in claim-enabled mode, defaults to configured keypair wallet), `dry_run` (default true), `execution_token`
 
@@ -115,7 +115,7 @@ Claim SOL from deactivated stake accounts. Requires a configured keypair. Uses t
 
 ### Prerequisites
 
-- Node.js 18+
+- Node.js 20+
 - npm
 
 ### Quick install (recommended)

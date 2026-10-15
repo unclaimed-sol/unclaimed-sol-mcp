@@ -50,10 +50,39 @@ describe('SignerService one-shot submission', () => {
     expect(results[1].error).toBe('NOT_SUBMITTED');
   });
 
-  it('rejects duplicate signed transactions before sending', async () => {
+  it('gets a fresh blockhash after the previous confirmation and before each send', async () => {
+    const { signer, connection, keypair, tx } = setup();
+    const second = new Transaction().add(SystemProgram.transfer({fromPubkey:keypair.publicKey,toPubkey:Keypair.generate().publicKey,lamports:2}));
+    const firstHash = Keypair.generate().publicKey.toBase58();
+    const secondHash = Keypair.generate().publicKey.toBase58();
+    connection.getLatestBlockhash.mockResolvedValueOnce({blockhash:firstHash,lastValidBlockHeight:100})
+      .mockImplementationOnce(async () => {
+        expect(connection.confirmTransaction).toHaveBeenCalledTimes(1);
+        return {blockhash:secondHash,lastValidBlockHeight:300};
+      });
+    const results = await signer.signAndSendBatch([tx,second],keypair);
+    expect(results.map(r=>r.status)).toEqual(['confirmed','confirmed']);
+    expect(connection.getLatestBlockhash).toHaveBeenCalledTimes(2);
+    expect(connection.sendRawTransaction.mock.calls.map(([bytes])=>Transaction.from(bytes).recentBlockhash)).toEqual([firstHash,secondHash]);
+    expect(connection.confirmTransaction.mock.calls[1][0]).toMatchObject({blockhash:secondHash,lastValidBlockHeight:300});
+  });
+
+  it('retains earlier confirmations if fetching a later blockhash fails', async () => {
+    const { signer, connection, keypair, tx } = setup();
+    const second = new Transaction().add(SystemProgram.transfer({fromPubkey:keypair.publicKey,toPubkey:Keypair.generate().publicKey,lamports:2}));
+    connection.getLatestBlockhash.mockResolvedValueOnce({blockhash:Keypair.generate().publicKey.toBase58(),lastValidBlockHeight:100})
+      .mockRejectedValueOnce(new Error('private RPC endpoint'));
+    const results = await signer.signAndSendBatch([tx,second],keypair);
+    expect(results[0].status).toBe('confirmed');
+    expect(results[1]).toEqual({signature:'',status:'failed',error:'NOT_SUBMITTED'});
+    expect(connection.sendRawTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects duplicate messages before fetching a blockhash or sending', async () => {
     const { signer, connection, keypair, tx } = setup();
     await expect(signer.signAndSendBatch([tx, tx], keypair)).rejects.toThrow('DUPLICATE');
     expect(connection.sendRawTransaction).not.toHaveBeenCalled();
+    expect(connection.getLatestBlockhash).not.toHaveBeenCalled();
   });
 
   it('rejects oversized batches before RPC', async () => {

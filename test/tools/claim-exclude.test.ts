@@ -31,6 +31,18 @@ describe('cleanup previews', () => {
     expect(result.content[0].text).toContain('1 token accounts and 1 buffer accounts');
     expect(result.content[0].text).toContain('base units: 10');
   });
+  it('reports skipped automatic candidates alongside eligible targets', async () => {
+    const {run,signer,token}=setup();
+    signer.inspectCleanup.mockResolvedValueOnce({tokens:[token],buffers:[],skippedTokenCount:2} as any);
+    const result = await run({});
+    expect(result.isError).not.toBe(true);
+    expect(result.content[0].text).toContain('Skipped 2 ineligible automatic');
+  });
+  it('reports skipped candidates even when none remain eligible', async () => {
+    const {run,signer}=setup();
+    signer.inspectCleanup.mockResolvedValueOnce({tokens:[],buffers:[],skippedTokenCount:1} as any);
+    expect((await run({})).content[0].text).toContain('Skipped 1 ineligible automatic');
+  });
   it('does not automatically select positive tokens', async () => {
     expect((await setup(true).run({})).isError).toBe(true);
   });

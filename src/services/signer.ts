@@ -40,23 +40,30 @@ export class SignerService {
   async signAndSendBatch(transactions: Transaction[], keypair: Keypair): Promise<SendResult[]> {
     if (transactions.length > 25) throw new Error('TRANSACTION_LIMIT_EXCEEDED');
     if (transactions.length === 0) return [];
-    const { blockhash, lastValidBlockHeight } = await this.connection.getLatestBlockhash('confirmed');
-    // Serialize the entire batch before sending anything, so size/serialization
-    // errors cannot cause partially submitted batches.
-    const signed = transactions.map(source => {
-      const tx = new Transaction({ feePayer: keypair.publicKey, blockhash, lastValidBlockHeight });
+    // Validate size and duplicate messages using a fixed placeholder before any
+    // submission. Actual signing happens only when each transaction is ready.
+    const prepared = transactions.map(source => {
+      const tx = new Transaction({ feePayer: keypair.publicKey, recentBlockhash: PublicKey.default.toBase58() });
       tx.add(...source.instructions);
-      tx.sign(keypair);
-      const bytes = tx.serialize();
+      const bytes = tx.serialize({ requireAllSignatures: false, verifySignatures: false });
       if (bytes.length > 1232) throw new Error('TRANSACTION_TOO_LARGE');
-      return { bytes, signature: bs58.encode(tx.signature!) };
+      return bytes;
     });
-    if (new Set(signed.map(tx => tx.signature)).size !== signed.length) {
+    if (new Set(prepared.map(bytes => bytes.toString('base64'))).size !== prepared.length) {
       throw new Error('DUPLICATE_TRANSACTIONS');
     }
     const results: SendResult[] = [];
-    for (const { bytes, signature } of signed) {
+    for (const preparedBytes of prepared) {
+      let signature = '';
+      let submissionAttempted = false;
       try {
+        const { blockhash, lastValidBlockHeight } = await this.connection.getLatestBlockhash('confirmed');
+        const tx = Transaction.from(preparedBytes);
+        tx.recentBlockhash = blockhash;
+        tx.sign(keypair);
+        const bytes = tx.serialize();
+        signature = bs58.encode(tx.signature!);
+        submissionAttempted = true;
         const returnedSignature = await this.connection.sendRawTransaction(bytes, {
           skipPreflight: false, preflightCommitment: 'confirmed', maxRetries: 0,
         });
@@ -69,10 +76,12 @@ export class SignerService {
           : { signature, status: 'confirmed' });
       } catch {
         // Retain the locally derived signature even if the send response was lost.
-        results.push({ signature, status: 'unknown', error: 'SUBMISSION_UNCERTAIN: check signature status before a fresh dry run' });
-        // Stop the batch after an unknown outcome; later transactions remain unsent.
-        for (const remaining of signed.slice(results.length)) {
-          results.push({ signature: remaining.signature, status: 'failed', error: 'NOT_SUBMITTED' });
+        results.push(submissionAttempted
+          ? { signature, status: 'unknown', error: 'SUBMISSION_UNCERTAIN: check signature status before a fresh dry run' }
+          : { signature, status: 'failed', error: 'NOT_SUBMITTED' });
+        // Preserve earlier results and stop; later transactions remain unsigned.
+        for (let i = results.length; i < prepared.length; i++) {
+          results.push({ signature: '', status: 'failed', error: 'NOT_SUBMITTED' });
         }
         break;
       }

@@ -221,9 +221,12 @@ export async function handleClaim(
       throw new ClaimError('Selected accounts are unavailable or excluded. Obtain a fresh dry run with a valid selection.');
     }
     const verified = await signer.inspectCleanup(walletPubkey, candidateTokens, candidateBuffers, token_accounts);
+    const skippedNote = verified.skippedTokenCount > 0
+      ? `\n\nSkipped ${verified.skippedTokenCount} ineligible automatic token account(s) (for example, wrapped SOL, closed accounts, or non-empty/non-canonical accounts).`
+      : '';
     if (verified.tokens.length + verified.buffers.length === 0) {
       let msg =
-        'No token or buffer accounts to claim for this wallet.';
+        'No token or buffer accounts to claim for this wallet.' + skippedNote;
       if (stakeInfo && stakeInfo.count > 0) {
         msg += `\n\nThis wallet may have stake account claims at ${url}`;
       }
@@ -262,7 +265,7 @@ export async function handleClaim(
       text += `\n\n${plan.skippedFrozenCount} frozen account(s) skipped (cannot be closed).`;
     }
 
-    text += buildTokenPreview(selectedTokens);
+    text += buildTokenPreview(selectedTokens) + skippedNote;
 
     text += '\n\nPreview only. Cleanup execution is unavailable until checked program instructions and SDK builders are available.';
 

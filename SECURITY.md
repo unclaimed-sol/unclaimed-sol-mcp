@@ -10,7 +10,7 @@ The main security boundary is: **transactions are validated locally before signi
 - The machine running this MCP server is trusted.
 - The configured Solana keypair is controlled by the user.
 - The configured Solana RPC and deployed program are trusted. RPC account reads and simulation are part of stake validation.
-- Token/buffer cleanup retains the published trust model: backend safe-mode discovery is trusted for target selection and estimates. Reward and stake transactions receive additional independent RPC checks.
+- Cleanup discovery and estimates come from the backend. Targets are independently checked via RPC during preview and revalidated before signing: account existence, program, state, mint, wallet ownership/authority, and zero balance for canonical token accounts. Buffers require loader ownership and wallet authority. Reward and stake transactions also receive independent RPC checks.
 
 ### Core guarantees
 
@@ -19,7 +19,7 @@ The main security boundary is: **transactions are validated locally before signi
 - **No blind signing**: every transaction is validated before signing.
 - **Two-step execution for claims**: `dry_run -> execution_token -> execute`.
 - **Short-lived, single-wallet execution tokens**: 60s TTL, one active token per wallet, consumed atomically before execution network calls, including failed or ambiguous attempts.
-- **Cleanup previews**: a dry run shows the backend-selected accounts and issues a single-use execution token. Symbol/name exclusions can reduce that selection at execution.
+- **Cleanup previews**: a dry run shows RPC-validated accounts and issues a single-use execution token. Ineligible accounts are skipped and counted at preview and execution; empty WSOL is accepted and funded WSOL is dropped. RPC failures propagate as errors. Exclusions can only reduce the previewed selection.
 - **Bounded fees and instruction validation**:
   - `claim_sol`: local instruction construction + program allowlist checks.
   - `claim_rewards` and `claim_stakes`: strict structural checks on backend-built transactions, including account layouts, discriminators, claim requirements, and fee caps.
@@ -36,7 +36,7 @@ The main security boundary is: **transactions are validated locally before signi
 ### Threats not fully mitigated
 
 - Compromise of the local machine or local key material.
-- Compromised backend cleanup selection or changes to token/buffer accounts after preview. Legacy cleanup instructions do not bind execution to the displayed balances; this release does not add atomic amount approvals.
+- Backend omissions or inaccurate estimates, and changes after RPC validation. The legacy cleanup program does not bind amounts atomically; pre-sign checks do not eliminate the race between reading account state and execution.
 - Reward fee caps use observed balances, not guaranteed realized proceeds.
 - Malicious or unstable RPC behavior causing failed or delayed execution.
 

@@ -75,11 +75,11 @@ Scan a wallet for SOL locked in dormant token accounts (incl. Token-2022) and pr
 
 **Annotation title:** Claim Dormant SOL (Vibe Claiming)
 
-A dry run shows the backend safe-mode selection, estimated recovery, fees and transaction count. It returns a 60-second single-use `execution_token`. Call with `dry_run: false` and that token to sign and submit locally.
+A dry run checks backend safe-mode candidates through the configured RPC and shows eligible accounts, estimated recovery, fees and transaction count. It returns a 60-second single-use `execution_token`. Call with `dry_run: false` and that token to sign and submit locally.
 
 **Inputs:** `wallet_address` (defaults to configured keypair wallet), `dry_run` (default true), `execution_token`, `max_transactions` (default 10, maximum 25), `exclude` (optional symbols/names to skip during execution).
 
-Cleanup retains the existing backend-trust model. Review the preview: closing accounts and burning remaining tokens is irreversible. The legacy program does not enforce that live balances match the preview; checked on-chain approvals are outside this release.
+Cleanup targets are revalidated via RPC before signing. Ineligible accounts are skipped and counted, including funded tokens; empty wrapped SOL is accepted. Review the preview: account closure is irreversible. RPC checks are snapshots: the legacy program does not bind amounts atomically, so balances can still change between validation and execution.
 
 ### `claim_rewards`
 
@@ -280,7 +280,7 @@ Using local build:
 - **Pre-sign validation** — Every transaction is validated before signing: program allowlist, exact instruction account layouts pinned to locally-derived PDAs, fee cap enforcement, and per-transaction claim requirement. For stakes, fee caps use bigint withdrawal amounts and the configured RPC verifies account state and full-withdrawal simulation. For Pump/PumpSwap rewards, fee caps also use locally derived accounts and live RPC balances with integer arithmetic.
 - **Execution tokens** — Claims require a dry run first. Tokens are consumed atomically before execution network calls, are single-wallet, and expire in 60 seconds. Failed or uncertain attempts require a fresh dry run.
 - **Keypair stays local** — Your private key never leaves your machine. Transactions are signed locally.
-- **Safety filtering** — Cleanup requests backend safe-mode candidates (`maxClaimMode: false`), skips frozen tokens, and preserves the previewed account set when execution exclusions are applied. Backend selection remains trusted.
+- **Safety filtering** — Cleanup requests backend safe-mode candidates (`maxClaimMode: false`), independently checks their state and authority via RPC, and revalidates the previewed targets before signing. Ineligible targets are skipped and counted; RPC failures abort the request.
 - **Request bounds** — Scans time out after 15 seconds; builds after 30 seconds. Responses are limited to 1 MiB, target arrays to 256, and batches to 25 transactions of at most 1,232 serialized bytes. The scan cache retains at most 256 entries.
 
 ## How claiming works
@@ -310,7 +310,7 @@ Program ID: `UNCaXzXkR3vp8mbCJyxWUvwuRk5uHgzrwe6jcWPfiUR` (from the pinned SDK).
 
 The pre-sign validator (`validateTransactionPrograms`) provides different levels of protection depending on the claim type:
 
-- **`claim_sol`** — Target discovery and estimates use the trusted backend safe-mode response. Transactions are built locally and checked against the program/fee-vault allowlist. The existing legacy cleanup instructions remain executable.
+- **`claim_sol`** — Discovery and estimates use the backend safe-mode response. RPC checks require empty canonical token accounts (including empty WSOL) with the expected mint, program, wallet owner and close authority, or loader-owned buffers with wallet authority. All previewed targets are revalidated before signing. Transactions are built locally and checked against the program/fee-vault allowlist; legacy instructions remain executable.
 - **`claim_stakes`** — Withdraw amounts are checked against live account balances, wallet withdrawal authority, lockup, sysvars, and full-withdrawal simulation during preview and execution. Fee arithmetic uses bigint.
 - **`claim_rewards`** — Pump/PumpSwap only. Discriminators and account addresses are checked against locally derived PDAs/ATAs. Native SOL and USDC service fees are capped using live source balances, rent reserves and integer arithmetic at preview and execution.
 

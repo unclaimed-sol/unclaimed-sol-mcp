@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { Connection } from '@solana/web3.js';
+import { inspectCleanupTargets } from '../services/cleanup-validation.js';
 import { ExecutionTokenStore, ExecutionTokenError } from '../execution-token-store.js';
 import { Config } from '../config.js';
 import {
@@ -24,7 +26,7 @@ import {
   DEFAULT_MAX_TRANSACTIONS,
 } from '../constants.js';
 
-// The published cleanup flow still trusts backend safe-mode target selection.
+// Discovery uses backend safe mode; RPC checks gate the actual target set.
 // Checked on-chain amounts and exact approvals require a separate rollout.
 const tokenStore = new ExecutionTokenStore<{
   tokens: TokenAccountInfo[];
@@ -222,6 +224,10 @@ export async function handleClaim(
         scanner.getClaimableBuffers(wallet),
       ]);
 
+      const checked = await inspectCleanupTargets(new Connection(config.rpcUrl), walletPubkey, tokensResp.tokens, buffersResp.buffers);
+      tokensResp.tokens = checked.tokens;
+      buffersResp.buffers = checked.buffers;
+
       // Optionally fetch stake info for reporting
       let stakeInfo: { count: number; estimatedSol: number } | null =
         null;
@@ -232,7 +238,7 @@ export async function handleClaim(
       }
 
       if (!tokensResp.tokens.some(t => !t.isFrozen) && buffersResp.buffers.length === 0) {
-        return { content: [{ type: 'text', text: 'No token or buffer accounts to claim for this wallet.' }], isError: true };
+        return { content: [{ type: 'text', text: `No token or buffer accounts to claim for this wallet. Skipped ${checked.skipped} ineligible account(s).` }], isError: true };
       }
 
       const plan = await txBuilder.buildClaimPlan(
@@ -269,7 +275,7 @@ export async function handleClaim(
       });
 
       let text =
-        `Dry run — no transactions sent.\n\n` +
+        `Dry run — no transactions sent. Skipped ${checked.skipped} ineligible account(s).\n\n` +
         `Estimated claim: ${formatSol(plan.estimatedSol)} from ` +
         `${plan.tokenAccountCount} token accounts and ${plan.bufferAccountCount} buffer accounts ` +
         `(token fee is max(2% rounded down, gross above 0.002 SOL); buffers use a 5% fee; network fees excluded).\n` +
@@ -327,29 +333,30 @@ export async function handleClaim(
     }
 
     const entry = tokenStore.take(execution_token, wallet);
+    const checked = await inspectCleanupTargets(new Connection(config.rpcUrl), walletPubkey, entry.tokens, entry.buffers);
     const normalizedExclude = normalizeExclude(exclude);
-    const claimableTokens = entry.tokens.filter((t) => !t.isFrozen);
+    const claimableTokens = checked.tokens.filter((t) => !t.isFrozen);
     const filteredTokens = claimableTokens.filter(
       (t) => !isExcludedByNameOrSymbol(t, normalizedExclude),
     );
     const excludedTokenCount = claimableTokens.length - filteredTokens.length;
 
-    if (filteredTokens.length === 0 && entry.buffers.length === 0) {
+    if (filteredTokens.length === 0 && checked.buffers.length === 0) {
       return {
         content: [
           {
             type: 'text',
-            text: 'All claimable token accounts were excluded and there are no buffer accounts left to claim.',
+            text: `No eligible accounts remain after validation and exclusions. Skipped ${checked.skipped} ineligible account(s).`,
           },
         ],
         isError: true,
       };
     }
 
-    const plan = normalizedExclude.size > 0
+    const plan = normalizedExclude.size > 0 || checked.skipped > 0
       ? await txBuilder.buildClaimPlan(
         filteredTokens,
-        entry.buffers,
+        checked.buffers,
         walletPubkey,
         entry.maxTransactions,
         entry.plan.stakeInfo,
@@ -401,6 +408,7 @@ export async function handleClaim(
         results.map(result => `${result.status}: ${result.signature || '(not submitted)'} ${result.error ?? ''}`).join('\n');
     }
 
+    text = `Skipped ${checked.skipped} ineligible account(s) during execution revalidation.\n\n${text}`;
     if (excludedTokenCount > 0) {
       text = `Excluded ${excludedTokenCount} token account(s) by name/symbol filter.\n\n${text}`;
     }

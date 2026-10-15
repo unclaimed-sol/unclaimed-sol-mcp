@@ -7,6 +7,7 @@ import type {
   BuffersResponse,
   TokensResponse,
 } from '../../src/services/scanner.js';
+vi.mock('../../src/services/cleanup-validation.js', () => ({inspectCleanupTargets:vi.fn(async (_rpc, _wallet, tokens, buffers)=>({tokens,buffers,skipped:0}))}));
 import type { ClaimPlan } from '../../src/services/transaction.js';
 
 function makeToken(

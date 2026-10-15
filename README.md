@@ -4,11 +4,11 @@
 
 [![npm version](https://img.shields.io/npm/v/%40unclaimed-sol%2Fmcp)](https://www.npmjs.com/package/@unclaimed-sol/mcp)
 [![npm downloads](https://img.shields.io/npm/dm/%40unclaimed-sol%2Fmcp)](https://www.npmjs.com/package/@unclaimed-sol/mcp)
-[![Node >=18](https://img.shields.io/badge/node-%3E%3D18-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
+[![Node >=20](https://img.shields.io/badge/node-%3E%3D20-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![CI](https://github.com/unclaimed-sol/unclaimed-sol-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/unclaimed-sol/unclaimed-sol-mcp/actions/workflows/ci.yml)
 
-Unclaimed SOL MCP — the first Vibe Claiming MCP server. One server, six reclaim categories: dormant token accounts (incl. Token-2022), spam NFTs, program buffers, deactivated stakes, DeFi rewards, and excess lamports. Read-only scanning with zero config; claiming with dry-run previews, 60-second single-use execution tokens, and local signing. Your keypair never leaves your machine. No seed phrases, ever.
+Unclaimed SOL MCP — the first Vibe Claiming MCP server. Reclaim categories: dormant token accounts (incl. Token-2022), program buffers, deactivated stakes, DeFi rewards. Read-only scanning with zero config; claiming with dry-run previews, 60-second single-use execution tokens, and local signing. Your keypair never leaves your machine. No seed phrases, ever.
 
 MCP server for [UnclaimedSOL](https://unclaimedsol.com) — works with AI agents and assistants (Claude, Cursor, Windsurf, Codex CLI, and any [Model Context Protocol](https://modelcontextprotocol.io) client).
 
@@ -33,21 +33,19 @@ Coverage as of July 2026:
 | Capability | Typical token-account cleaners | Unclaimed SOL MCP |
 |---|---|---|
 | Dormant token accounts | Yes | Yes, including Token-2022 |
-| Spam NFTs | Sometimes | Yes |
 | Program buffers | Rare | Yes |
 | Deactivated stakes | Rare | Yes |
-| DeFi rewards | Rare | Yes |
-| Excess lamports | Rare | Yes |
+| Pump/PumpSwap rewards | Rare | Yes |
 | Read-only scan mode zero config | Sometimes | Yes |
 | Keypair-file option | Sometimes | Yes, via `SOLANA_KEYPAIR_PATH` |
 
 ## What it does
 
-Solana wallets accumulate rent-locked SOL in dormant token accounts (including Token-2022), spam NFTs, program buffer accounts, deactivated stakes, DeFi rewards, and excess lamports. This MCP server lets AI agents and assistants:
+Solana wallets accumulate rent-locked SOL in dormant token accounts (including Token-2022), program buffer accounts, deactivated stakes, DeFi rewards. This MCP server lets AI agents and assistants:
 
 - **Scan** any wallet to check for reclaimable SOL in dormant token accounts and program buffers.
-- **Claim** (Vibe Claiming) — burn worthless token balances, close dormant accounts, and reclaim the rent SOL. Signs and broadcasts transactions locally via the UnclaimedSOL on-chain program. Token cleanup lets users keep up to 0.002 SOL per closed account; buffers use a 5% fee.
-- **Claim rewards** — claim uncollected DeFi rewards (cashback, creator fees, etc.). Pump/PumpSwap are 3% capped at 1 SOL or 100 USDC; other rewards are 15%.
+- **Claim** (Vibe Claiming) — preview backend-selected token and buffer accounts, then sign and submit locally using a single-use execution token. Token cleanup lets users keep up to 0.002 SOL per closed account; buffers use a 5% fee.
+- **Claim rewards** — claim uncollected DeFi rewards (cashback, creator fees, etc.). Only Pump/PumpSwap reward execution is supported, at 3% capped at 1 SOL or 100 USDC.
 - **Claim stakes** — claim SOL from deactivated stake accounts. 3% fee.
 
 ### Fees
@@ -57,7 +55,7 @@ Solana wallets accumulate rent-locked SOL in dormant token accounts (including T
 | Scanning | Free |
 | Token cleanup | User keeps up to 0.002 SOL per closed account |
 | Program buffers | 5% |
-| DeFi rewards | 15% general |
+| Pump/PumpSwap accumulator rent close | 5% |
 | Pump/PumpSwap rewards | 3%, capped at 1 SOL / 100 USDC |
 | Deactivated stakes | 3% |
 
@@ -71,26 +69,23 @@ No funds pass through the MCP server.
 
 Scan a wallet for SOL locked in dormant token accounts (incl. Token-2022) and program buffer accounts. Read-only — no transactions, no keypair needed. DeFi rewards and deactivated stakes are discovered through the `claim_rewards` and `claim_stakes` dry runs.
 
-**Input:** `wallet_address` (base58 public key; optional in claim-enabled mode, defaults to configured keypair wallet)
+**Inputs:** `wallet_address` (base58 public key; optional in claim-enabled mode, defaults to configured keypair wallet)
 
 ### `claim_sol`
 
 **Annotation title:** Claim Dormant SOL (Vibe Claiming)
 
-Claim reclaimable SOL. Requires a configured keypair. Uses a two-step flow:
+Closes empty token accounts and program buffers to reclaim rent. A dry run checks backend safe-mode candidates through the configured RPC and shows eligible accounts, estimated recovery, fees and transaction count. It returns a 60-second single-use `execution_token`. Call with `dry_run: false` and that token to sign and submit locally.
 
-1. **Dry run** (default) — shows a breakdown of reclaimable accounts, estimated SOL, fee, and transaction count. Returns a one-time `execution_token` valid for 60 seconds.
-2. **Execute** — call again with `dry_run: false` and the `execution_token` to sign and broadcast.
+**Inputs:** `wallet_address` (defaults to configured keypair wallet), `dry_run` (default true), `execution_token`, `max_transactions` (default 10, maximum 25), `exclude` (optional symbols/names to skip during execution).
 
-**Inputs:** `wallet_address` (optional in claim-enabled mode, defaults to configured keypair wallet), `dry_run` (default true), `execution_token`, `max_transactions` (default 10), `exclude` (optional token symbols/names to skip on execute)
-
-This action is irreversible — closed accounts cannot be recovered.
+Cleanup targets are revalidated via RPC before signing. Ineligible accounts are skipped and counted, including funded tokens; empty wrapped SOL is accepted. Review the preview: account closure is irreversible. RPC checks are snapshots: the legacy program does not bind amounts atomically, so balances can still change between validation and execution.
 
 ### `claim_rewards`
 
 **Annotation title:** Claim DeFi Rewards
 
-Claim uncollected DeFi rewards (cashback, creator fees, and more). Requires a configured keypair. Uses the same two-step dry-run/execute flow as `claim_sol`. Pump/PumpSwap are 3% capped at 1 SOL or 100 USDC; other rewards are 15%.
+Claim uncollected DeFi rewards (cashback, creator fees, and more). Requires a configured keypair. A dry run returns a 60-second single-use `execution_token`; `dry_run: false` with that token executes the claim. Only Pump/PumpSwap reward execution is supported, at 3% capped at 1 SOL or 100 USDC.
 
 **Inputs:** `wallet_address` (optional in claim-enabled mode, defaults to configured keypair wallet), `dry_run` (default true), `execution_token`
 
@@ -120,8 +115,12 @@ Claim SOL from deactivated stake accounts. Requires a configured keypair. Uses t
 
 ### Prerequisites
 
-- Node.js 18+
+- Node.js 20+
 - npm
+
+### Release status
+
+This branch prepares **2.0.0 (unreleased)**. Until it is published, the package commands below install the latest published release. To test this checkout instead, run `npm ci`, `npm run build`, and point your MCP client at `node dist/index.js`. Merging this branch does not publish the package.
 
 ### Quick install (recommended)
 
@@ -271,32 +270,34 @@ Using local build:
 | `UNCLAIMED_SOL_API_KEY` | No | API key sent as `Authorization: Bearer` header. |
 | `SOLANA_KEYPAIR_PATH` | No | Path to Solana keypair JSON file. Enables Vibe Claiming. |
 | `SOLANA_PRIVATE_KEY` | No | Private key as base58 string or JSON byte array. Use `SOLANA_KEYPAIR_PATH` instead when possible. |
-| `SOLANA_RPC_URL` | No | Solana RPC endpoint. Defaults to `https://api.mainnet-beta.solana.com`. A dedicated RPC is recommended for claiming. |
+| `SOLANA_RPC_URL` | No | Solana RPC endpoint. Defaults to `https://api.mainnet-beta.solana.com`. Claim dry runs read account state and simulate stake withdrawals through this endpoint, so a dedicated RPC is strongly recommended for claiming; the public endpoint rate-limits these reads. |
 | `SOLANA_PRIORITY_FEE` | No | Priority fee in microlamports per compute unit. Default: 1,000. Max: 200,000. |
 
 ## Security
 
-- **HTTPS enforced** — Claim mode requires HTTPS for the API URL (HTTP only allowed for localhost).
-- **API URL allowlist** — Claim mode only connects to `unclaimedsol.com`, `localhost`, or `127.0.0.1`.
-- **Pre-sign validation** — Every transaction is validated before signing: program allowlist, exact instruction account layouts pinned to locally-derived PDAs, fee cap enforcement, and per-transaction claim requirement. For stakes, fee caps are derived from proven on-chain withdraw amounts. For rewards, fee caps are cross-checked against an independent scan (see trust model below).
-- **Execution tokens** — Claims require a dry run first. Tokens are single-use, single-wallet, and expire in 60 seconds.
+- **HTTPS enforced** — Signing or configuring an API key requires HTTPS and the production API host.
+- **API URL allowlist** — The production host is `unclaimedsol.com`. `UNCLAIMED_SOL_ALLOW_DEV_API=true` permits custom HTTPS hosts and local HTTP for development.
+- **Pre-sign validation** — Every transaction is validated before signing: program allowlist, exact instruction account layouts pinned to locally-derived PDAs, fee cap enforcement, and per-transaction claim requirement. For stakes, fee caps use bigint withdrawal amounts and the configured RPC verifies account state and full-withdrawal simulation. For Pump/PumpSwap rewards, fee caps also use locally derived accounts and live RPC balances with integer arithmetic.
+- **Execution tokens** — Claims require a dry run first. Tokens are consumed atomically before execution network calls, are single-wallet, and expire in 60 seconds. Failed or uncertain attempts require a fresh dry run.
 - **Keypair stays local** — Your private key never leaves your machine. Transactions are signed locally.
-- **Safety filtering** — Token accounts are filtered server-side (`maxClaimMode: false`) to exclude valuable tokens and NFTs. Frozen accounts are skipped.
-- **Request timeouts** — All API calls have a 15-second timeout.
+- **Safety filtering** — Cleanup requests backend safe-mode candidates (`maxClaimMode: false`), independently checks their state and authority via RPC, and revalidates the previewed targets before signing. Ineligible targets are skipped and counted; RPC failures abort the request.
+- **Request bounds** — Scans time out after 15 seconds; builds after 30 seconds. Responses are limited to 1 MiB, and batches to 25 transactions of at most 1,232 serialized bytes. Cleanup previews validate candidates in order and stop at 256 eligible accounts per dry run. The scan cache retains at most 256 entries.
 
 ## How claiming works
+
+Program ID: `UNCaXzXkR3vp8mbCJyxWUvwuRk5uHgzrwe6jcWPfiUR` (from the pinned SDK).
 
 ### Token/buffer claims (`claim_sol`)
 
 1. The MCP server calls the UnclaimedSOL backend to fetch reclaimable token and buffer accounts.
-2. Instructions are built using the [`@unclaimedsol/spl-burn-close-sdk`](https://www.npmjs.com/package/@unclaimedsol/spl-burn-close-sdk) — token balances are burned and accounts are closed via the UnclaimedSOL on-chain program.
-3. Transactions are signed locally with your keypair and broadcast to the Solana network.
-4. The on-chain program collects recovered token-account rent above 0.002 SOL per successfully closed account, plus 5% for buffers. No funds pass through the MCP server.
+2. Instructions are built using the [`@unclaimedsol/spl-burn-close-sdk`](https://www.npmjs.com/package/@unclaimedsol/spl-burn-close-sdk) to close the previewed empty token accounts and program buffers.
+3. Execution atomically consumes the token before network calls, validates the locally built transactions, and signs each transaction immediately before its first send.
+4. The current program source charges the greater of 2% of recovered token-account lamports or the amount above 0.002 SOL, plus 5% for buffers. Verify the deployed binary before changing fee policy. No funds pass through the MCP server.
 
 ### Rewards claims (`claim_rewards`)
 
 1. The backend builds unsigned transactions containing DeFi reward claim instructions and a fee transfer.
-2. The MCP validates every instruction: exact account layouts, discriminators, and locally-derived PDAs. Fee is capped at 15% of an independently-scanned reward total, while Pump/PumpSwap pricing is expected to be lower.
+2. The MCP validates instruction layouts, discriminators, and locally-derived PDAs. Builds explicitly request Pump/PumpSwap only. The configured RPC independently supplies source balances and rent reserves for native SOL and USDC fee caps. Backend totals are additional cross-checks.
 3. Transactions are signed locally and broadcast.
 
 ### Stake claims (`claim_stakes`)
@@ -309,11 +310,11 @@ Using local build:
 
 The pre-sign validator (`validateTransactionPrograms`) provides different levels of protection depending on the claim type:
 
-- **`claim_sol`** — Instructions are built locally using the SDK. The validator checks program IDs and fee vault presence.
-- **`claim_stakes`** — **Full value-level safety.** Withdraw amounts are proven from Stake instruction data. The fee cap is locally derived and does not depend on any backend-reported value.
-- **`claim_rewards`** — **Structural safety.** DeFi reward claim amounts are determined on-chain at execution time and are not encoded in instruction data. The fee cap is cross-checked against an independent `/scan` call, which protects against accidental drift between backend endpoints but not against a fully compromised backend.
+- **`claim_sol`** — Discovery and estimates use the backend safe-mode response. RPC checks require empty token accounts (including empty WSOL) with the expected mint, program, wallet owner and close authority, or loader-owned buffers with wallet authority. All previewed targets are revalidated before signing. Transactions are built locally and checked against the program/fee-vault allowlist; legacy instructions remain executable.
+- **`claim_stakes`** — Withdraw amounts are checked against live account balances, wallet withdrawal authority, lockup, sysvars, and full-withdrawal simulation during preview and execution. Fee arithmetic uses bigint.
+- **`claim_rewards`** — Pump/PumpSwap only. Discriminators and account addresses are checked against locally derived PDAs/ATAs. Native SOL and USDC service fees are capped using live source balances, rent reserves and integer arithmetic at preview and execution.
 
-In all cases: instruction shapes are pinned exactly (every account position verified against locally-derived PDAs, exact account counts, known discriminators only).
+RPC reads are snapshots, not atomic on-chain assertions. Reward balances may change before execution; a fee bounded by the last observed reward is not a guarantee of realized proceeds. Atomic cleanup amount approvals require a separate coordinated program/SDK change; they are not provided by this release. The backend currently has an unversioned contract; MCP rejects any advertised contract version until its schema is implemented. See [SECURITY.md](SECURITY.md) for the trust assumptions.
 
 ## Project structure
 

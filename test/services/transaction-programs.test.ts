@@ -206,7 +206,7 @@ function makePumpSwapCollectCoinCreatorFee(): TransactionInstruction {
 function makeSplTokenCloseAccount(account?: PublicKey): TransactionInstruction {
   return new TransactionInstruction({
     keys: [
-      { pubkey: account ?? Keypair.generate().publicKey, isSigner: false, isWritable: true },
+      { pubkey: account ?? deriveAta(wallet), isSigner: false, isWritable: true },
       { pubkey: wallet, isSigner: false, isWritable: true },
       { pubkey: wallet, isSigner: true, isWritable: false },
     ],
@@ -1103,7 +1103,7 @@ describe('validateTransactionPrograms', () => {
     it('rejects wrong discriminator', () => {
       const ix = new TransactionInstruction({
         keys: [
-          { pubkey: Keypair.generate().publicKey, isSigner: false, isWritable: true },
+          { pubkey: deriveAta(wallet), isSigner: false, isWritable: true },
           { pubkey: wallet, isSigner: false, isWritable: true },
           { pubkey: wallet, isSigner: true, isWritable: false },
         ],
@@ -1119,7 +1119,7 @@ describe('validateTransactionPrograms', () => {
     it('rejects wrong account count', () => {
       const ix = new TransactionInstruction({
         keys: [
-          { pubkey: Keypair.generate().publicKey, isSigner: false, isWritable: true },
+          { pubkey: deriveAta(wallet), isSigner: false, isWritable: true },
           { pubkey: wallet, isSigner: false, isWritable: true },
         ], // 2, expected 3
         programId: SPL_TOKEN_PROGRAM_ID,
@@ -1134,7 +1134,7 @@ describe('validateTransactionPrograms', () => {
     it('rejects wrong destination', () => {
       const ix = new TransactionInstruction({
         keys: [
-          { pubkey: Keypair.generate().publicKey, isSigner: false, isWritable: true },
+          { pubkey: deriveAta(wallet), isSigner: false, isWritable: true },
           { pubkey: randomKey, isSigner: false, isWritable: true }, // wrong dest
           { pubkey: wallet, isSigner: true, isWritable: false },
         ],
@@ -1150,7 +1150,7 @@ describe('validateTransactionPrograms', () => {
     it('rejects wrong authority', () => {
       const ix = new TransactionInstruction({
         keys: [
-          { pubkey: Keypair.generate().publicKey, isSigner: false, isWritable: true },
+          { pubkey: deriveAta(wallet), isSigner: false, isWritable: true },
           { pubkey: wallet, isSigner: false, isWritable: true },
           { pubkey: randomKey, isSigner: true, isWritable: false }, // wrong auth
         ],
@@ -1330,5 +1330,25 @@ describe('validateTransactionPrograms', () => {
         validateTransactionPrograms([tx1, tx2], wallet, FEE_BPS, BACKEND_TOTAL * 2),
       ).toThrow('Tx 2');
     });
+  });
+});
+
+describe('claim source and exact stake contract', () => {
+  it('rejects stake instructions in a rewards build', () => {
+    expect(() => validateTransactionPrograms([validStakeTx()], wallet, 300, 5_000_000_000,
+      undefined, undefined, 'rewards')).toThrow('unexpected claim source');
+  });
+  it.each([NaN, Infinity, -1, Number.MAX_SAFE_INTEGER + 1])('rejects invalid fee basis %s', value => {
+    expect(() => validateTransactionPrograms([validStakeTx()], wallet, 300, value)).toThrow('Invalid transaction limits');
+  });
+  it.each([2, 3, 4])('rejects incorrect stake account meta %s', index => {
+    const ix = makeStakeWithdraw(2_000_000);
+    ix.keys[index].pubkey = randomKey;
+    expect(() => validateTransactionPrograms([new Transaction().add(ix)], wallet, 300, 2_000_000)).toThrow();
+  });
+  it('rejects malformed compute-budget instructions', () => {
+    const tx = validStakeTx();
+    tx.add(new TransactionInstruction({ programId: ComputeBudgetProgram.programId, keys: [], data: Buffer.from([3]) }));
+    expect(() => validateTransactionPrograms([tx], wallet, 300, 5_000_000_000)).toThrow('invalid ComputeBudget');
   });
 });

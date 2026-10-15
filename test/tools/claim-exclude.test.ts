@@ -101,6 +101,7 @@ describe('claim_sol exclude execution scope', () => {
     } as any;
 
     const signer = {
+      inspectCleanup: vi.fn(async (_wallet, tokens, buffers) => ({tokens,buffers,skipped:0})),
       getBalance: vi
         .fn()
         .mockResolvedValueOnce(1_000_000_000)
@@ -156,4 +157,3 @@ describe('claim_sol exclude execution scope', () => {
     expect(secondCallPubkeys).not.toContain(tokenC.pubKey);
   });
 });
-

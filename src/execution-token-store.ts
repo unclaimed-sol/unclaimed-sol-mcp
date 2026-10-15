@@ -66,7 +66,14 @@ export class ExecutionTokenStore<T> {
     return token;
   }
 
-  validate(token: string, wallet: string): T {
+  /** Synchronous validation and removal: no await may separate these operations. */
+  take(token: string, wallet: string): T {
+    const payload = this.validate(token, wallet);
+    this.consume(token, wallet);
+    return payload;
+  }
+
+  private validate(token: string, wallet: string): T {
     const entry = this.allTokens.get(token);
     if (!entry)
       throw new ExecutionTokenError(
@@ -86,7 +93,7 @@ export class ExecutionTokenStore<T> {
     return entry.payload;
   }
 
-  consume(token: string, wallet: string): void {
+  private consume(token: string, wallet: string): void {
     this.allTokens.delete(token);
     if (this.tokensByWallet.get(wallet)?.token === token)
       this.tokensByWallet.delete(wallet);

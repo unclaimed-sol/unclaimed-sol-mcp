@@ -82,7 +82,7 @@ function buildTokenPreview(tokens: TokenAccountInfo[]): string {
   const empty = tokens.filter((t) => t.amountUi === 0);
   const nonEmpty = tokens.filter((t) => t.amountUi > 0);
   const MAX_PER_GROUP = 8;
-  const lines: string[] = ['Tokens selected for burn (safe mode):'];
+  const lines: string[] = ['Empty token accounts selected for closure (safe mode):'];
 
   const appendGroup = (
     title: string,
@@ -123,7 +123,7 @@ export function getClaimToolDefinition(keypairWallet?: string) {
     name: 'claim_sol',
     description:
       'Claim reclaimable SOL from dormant token and buffer accounts. ' +
-      'Burns selected token balances and closes accounts to reclaim rent. ' +
+      'Closes empty token accounts and program buffers to reclaim rent. ' +
       'This action is irreversible — closed accounts cannot be recovered. ' +
       'Signs and broadcasts locally via UnclaimedSOL on-chain program. ' +
       'Token cleanup lets the user keep up to 0.002 SOL per closed account; buffers use a 5% fee. ' +
@@ -233,7 +233,7 @@ export async function handleClaim(
       const checked = await signer.inspectCleanup(walletPubkey, tokensResp.tokens, buffersResp.buffers);
       tokensResp.tokens = checked.tokens;
       buffersResp.buffers = checked.buffers;
-      const omittedCount = (tokensResp.omittedCount ?? 0) + (buffersResp.omittedCount ?? 0);
+      const omittedCount = checked.omitted;
       if (omittedCount > 0) {
         bufferNotice = `${bufferNotice ? `${bufferNotice}\n\n` : ''}${omittedCount} additional account(s) were not previewed; run claim_sol again after this claim.`;
       }
@@ -306,8 +306,7 @@ export async function handleClaim(
 
       // Irreversibility warning
       text +=
-        `\n\nThis will permanently close these accounts and burn any remaining ` +
-        `token balances. This action is irreversible. For a visual breakdown of ` +
+        `\n\nThis will permanently close these accounts. This action is irreversible. For a visual breakdown of ` +
         `each account, review at ${url} before proceeding.`;
 
       if (plan.tokenAccountCount > 0) {

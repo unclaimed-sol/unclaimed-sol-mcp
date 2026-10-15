@@ -6,7 +6,7 @@
     "type": "git",
     "url": "https://github.com/unclaimed-sol/unclaimed-sol-mcp"
   },
-  "description": "The first Vibe Claiming MCP server: let AI agents scan and reclaim dormant SOL on Solana — rent from token accounts and spam NFTs, program buffers, deactivated stakes, and DeFi rewards. Dry-run + execution-token safety, local signing, keypair never leaves your machine.",
+  "description": "The first Vibe Claiming MCP server: let AI agents scan and reclaim dormant SOL on Solana — rent from token accounts, program buffers, deactivated stakes, and DeFi rewards. Dry-run + execution-token safety, local signing, keypair never leaves your machine.",
   "type": "module",
   "main": "dist/index.js",
   "bin": {

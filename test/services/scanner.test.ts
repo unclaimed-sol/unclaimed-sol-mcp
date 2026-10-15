@@ -129,17 +129,11 @@ describe('ScannerService contract boundaries', () => {
     await expect(new ScannerService(makeConfig()).getClaimableTokens(wallet)).rejects.toThrow('INVALID_BACKEND_RESPONSE');
   });
 
-  it('keeps the first 256 token targets and reports the omitted remainder', async () => {
+  it('returns all 300 token candidates for RPC eligibility filtering', async () => {
     const tokens = Array.from({ length: 300 }, () => ({ ...token, pubKey: Keypair.generate().publicKey.toBase58() }));
     respond({ tokens, claimableSol: 0, rewardFee: 0 });
     const result = await new ScannerService(makeConfig()).getClaimableTokens(wallet);
-    expect(result.tokens).toEqual(tokens.slice(0, 256));
-    expect(result.omittedCount).toBe(44);
-  });
-
-  it('omits the count when every target fits', async () => {
-    respond({ tokens: [token], claimableSol: 0, rewardFee: 0 });
-    expect(await new ScannerService(makeConfig()).getClaimableTokens(wallet)).not.toHaveProperty('omittedCount');
+    expect(result.tokens).toEqual(tokens);
   });
 
   it('reports a contract mismatch as a scanner error', async () => {

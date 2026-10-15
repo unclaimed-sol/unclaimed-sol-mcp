@@ -53,7 +53,7 @@ describe('SignerService one-shot submission', () => {
   it('records a typed send rejection without leaking details and continues to the next transaction', async () => {
     const {signer,connection,keypair,tx}=setup();
     const next=new Transaction().add(SystemProgram.transfer({fromPubkey:keypair.publicKey,toPubkey:Keypair.generate().publicKey,lamports:2}));
-    connection.sendRawTransaction.mockRejectedValueOnce(new SendTransactionError({action:'simulate',signature:'',transactionMessage:'https://rpc.example/secret',logs:['secret log']}));
+    connection.sendRawTransaction.mockRejectedValueOnce(new SendTransactionError({action:'simulate',signature:'',transactionMessage:'Transaction simulation failed: https://rpc.example/secret',logs:['secret log']}));
     const results=await signer.signAndSendBatch([tx,next],keypair);
     expect(results[0]).toMatchObject({status:'failed',error:'PREFLIGHT_REJECTED'});
     expect(results[0].signature).toMatch(/^[1-9A-HJ-NP-Za-km-z]+$/);
@@ -61,6 +61,17 @@ describe('SignerService one-shot submission', () => {
     expect(JSON.stringify(results)).not.toContain('secret');
     expect(connection.sendRawTransaction).toHaveBeenCalledTimes(2);
     expect(connection.confirmTransaction).toHaveBeenCalledTimes(1);
+  });
+  it('retains the signature and stops after a typed internal send error', async () => {
+    const {signer,connection,keypair,tx}=setup();
+    const next=new Transaction().add(SystemProgram.transfer({fromPubkey:keypair.publicKey,toPubkey:Keypair.generate().publicKey,lamports:2}));
+    connection.sendRawTransaction.mockRejectedValueOnce(new SendTransactionError({action:'simulate',signature:'',transactionMessage:'Internal error'}));
+    const results=await signer.signAndSendBatch([tx,next],keypair);
+    expect(results[0].status).toBe('unknown');
+    expect(results[0].signature).toBe(bs58.encode(Transaction.from(connection.sendRawTransaction.mock.calls[0][0]).signature!));
+    expect(results[1]).toEqual({signature:'',status:'failed',error:'NOT_SUBMITTED'});
+    expect(connection.sendRawTransaction).toHaveBeenCalledTimes(1);
+    expect(connection.confirmTransaction).not.toHaveBeenCalled();
   });
   it.each(['generic send','typed confirmation','generic confirmation'])('keeps %s errors uncertain and stops the batch', async phase => {
     const {signer,connection,keypair,tx}=setup();

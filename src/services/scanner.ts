@@ -30,8 +30,6 @@ export interface TokensResponse {
   claimableSol: number;
   tokens: TokenAccountInfo[];
   rewardFee: number; // REWARD_FEE from backend
-  /** Backend rows beyond MAX_TARGETS, dropped from this response. */
-  omittedCount?: number;
 }
 
 /**
@@ -51,8 +49,6 @@ export interface BufferAccountInfo {
 export interface BuffersResponse {
   claimableSol: number; // userReceives
   buffers: BufferAccountInfo[];
-  /** Backend rows beyond MAX_TARGETS, dropped from this response. */
-  omittedCount?: number;
 }
 
 /**
@@ -199,12 +195,6 @@ const uniqueTargets = <T extends z.ZodType>(schema: T, key: string) =>
     rows => new Set(rows.map(row => (row as Record<string, unknown>)[key])).size === rows.length,
     'Duplicate targets',
   );
-/** Keep the first MAX_TARGETS rows; the caller reports how many were dropped. */
-function truncateTargets<T>(rows: T[]): { rows: T[]; omittedCount: number } {
-  return rows.length > MAX_TARGETS
-    ? { rows: rows.slice(0, MAX_TARGETS), omittedCount: rows.length - MAX_TARGETS }
-    : { rows, omittedCount: 0 };
-}
 /** Contract mismatches surface as scanner errors, not generic failures. */
 function parseContract<T extends z.ZodType>(schema: T, data: unknown): z.infer<T> {
   const result = schema.safeParse(data);
@@ -364,8 +354,7 @@ export class ScannerService {
     }
 
     const data = parseContract(tokenResponseSchema, await readBoundedJson(response));
-    const { rows, omittedCount } = truncateTargets(data.tokens);
-    return { ...data, tokens: rows, ...(omittedCount > 0 ? { omittedCount } : {}) };
+    return data;
   }
 
   /**
@@ -392,11 +381,9 @@ export class ScannerService {
     if (data.complete === false || data.cacheStatus === 'disabled' || data.terminationReason === 'disabled') {
       throw new ScannerError('BUFFER_DISCOVERY_UNAVAILABLE');
     }
-    const { rows, omittedCount } = truncateTargets(data.buffers);
     return {
       claimableSol: data.claimableSol,
-      buffers: rows.map(buffer => ({ pubkey: buffer.address, lamports: buffer.lamports, dataLength: buffer.dataSize })),
-      ...(omittedCount > 0 ? { omittedCount } : {}),
+      buffers: data.buffers.map(buffer => ({ pubkey: buffer.address, lamports: buffer.lamports, dataLength: buffer.dataSize })),
     };
   }
 

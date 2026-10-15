@@ -61,6 +61,16 @@ describe('published cleanup execution flow',()=>{
     expect(result.content[0].text).not.toContain('Skipped');
     expect(signer.signAndSendBatch).toHaveBeenCalledOnce();
   });
+  it('reports candidates omitted by the RPC eligibility cap',async()=>{
+    const {run,signer,token}=setup();
+    vi.spyOn(signer,'inspectCleanup').mockResolvedValueOnce({tokens:[{...token,amountUi:0}],buffers:[],skipped:256,omitted:44});
+    const preview=await run({});
+    executionToken(preview);
+    expect(preview.content[0].text).toContain('44 additional account(s) were not previewed; run claim_sol again after this claim');
+    expect(preview.content[0].text).toContain('Skipped 256 ineligible');
+    expect(preview.content[0].text).toContain('This will permanently close these accounts.');
+    expect(preview.content[0].text).not.toContain('burn');
+  });
   it('keeps empty wrapped-SOL candidates compatible with the existing flow',async()=>{
     const {run,token,signer,wallet}=setup();
     token.mintKey=NATIVE_MINT.toBase58(); token.amountUi=0; token.pubKey=deriveAta(wallet,NATIVE_MINT).toBase58();

@@ -12,6 +12,11 @@ export interface SendResult {
   error?: string;
 }
 
+function isPreflightRejection(err: unknown): boolean {
+  // web3.js exposes its private transactionMessage through this public getter.
+  return err instanceof SendTransactionError && /^Transaction simulation failed/i.test(err.transactionError.message);
+}
+
 export class SignerService {
   private connection: Connection;
 
@@ -72,7 +77,7 @@ export class SignerService {
             skipPreflight: false, preflightCommitment: 'confirmed',
           });
         } catch (err) {
-          if (!(err instanceof SendTransactionError)) throw err;
+          if (!isPreflightRejection(err)) throw err;
           results.push({ signature, status: 'failed', error: 'PREFLIGHT_REJECTED' });
           continue; // The rejected transaction is never retried.
         }

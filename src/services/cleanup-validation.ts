@@ -75,7 +75,7 @@ function isWalletBuffer(
 }
 
 /**
- * Re-read every cleanup target from RPC and keep only accounts the legacy
+ * Read cleanup candidates in order from RPC and keep only accounts the legacy
  * program can close for this wallet. These are snapshot checks: legacy
  * instructions do not bind amounts atomically, so balances can still change
  * between this read and execution. RPC errors propagate to the caller.
@@ -85,39 +85,49 @@ export async function inspectCleanupTargets(
   wallet: PublicKey,
   tokens: TokenAccountInfo[],
   buffers: BufferAccountInfo[],
+  limit = 256,
 ): Promise<{
   tokens: TokenAccountInfo[];
   buffers: BufferAccountInfo[];
   skipped: number;
+  omitted: number;
 }> {
   const addresses = [
     ...tokens.map((token) => new PublicKey(token.pubKey)),
     ...buffers.map((buffer) => new PublicKey(buffer.pubkey)),
   ];
-  const reads: Promise<(AccountInfo<Buffer> | null)[]>[] = [];
-  for (let i = 0; i < addresses.length; i += RPC_BATCH_SIZE) {
-    reads.push(
-      connection.getMultipleAccountsInfo(
-        addresses.slice(i, i + RPC_BATCH_SIZE),
-        'confirmed',
-      ),
-    );
+  const verifiedTokens: TokenAccountInfo[] = [];
+  const verifiedBuffers: BufferAccountInfo[] = [];
+  let read = 0;
+  let skipped = 0;
+  while (read < addresses.length && verifiedTokens.length + verifiedBuffers.length < limit) {
+    // Never read more candidates than could fit if all of them are eligible.
+    const remaining = limit - verifiedTokens.length - verifiedBuffers.length;
+    const chunk = addresses.slice(read, read + Math.min(RPC_BATCH_SIZE, remaining));
+    const infos = await connection.getMultipleAccountsInfo(chunk, 'confirmed');
+    if (infos.length !== chunk.length) throw new Error('INCOMPLETE_RPC_RESPONSE');
+    for (let i = 0; i < infos.length; i++) {
+      const index = read + i;
+      if (index < tokens.length) {
+        const token = tokens[index];
+        if (isEmptyWalletTokenAccount(infos[i], wallet, token)) {
+          verifiedTokens.push({ ...token, amountUi: 0, isFrozen: false });
+        } else {
+          skipped++;
+        }
+      } else if (isWalletBuffer(infos[i], wallet)) {
+        verifiedBuffers.push(buffers[index - tokens.length]);
+      } else {
+        skipped++;
+      }
+    }
+    read += chunk.length;
   }
-  const infos = (await Promise.all(reads)).flat();
-  if (infos.length !== addresses.length) {
-    throw new Error('INCOMPLETE_RPC_RESPONSE');
-  }
-
-  const verifiedTokens = tokens
-    .filter((token, i) => isEmptyWalletTokenAccount(infos[i], wallet, token))
-    .map((token) => ({ ...token, amountUi: 0, isFrozen: false }));
-  const verifiedBuffers = buffers.filter((_, i) =>
-    isWalletBuffer(infos[tokens.length + i], wallet),
-  );
 
   return {
     tokens: verifiedTokens,
     buffers: verifiedBuffers,
-    skipped: addresses.length - verifiedTokens.length - verifiedBuffers.length,
+    skipped,
+    omitted: addresses.length - read,
   };
 }

@@ -10,7 +10,7 @@ The main security boundary is: **transactions are validated locally before signi
 - The machine running this MCP server is trusted.
 - The configured Solana keypair is controlled by the user.
 - The configured Solana RPC and deployed program are trusted. RPC reads and simulation support token cleanup and stake validation. Token cleanup requires the deployed selector 2 instruction.
-- Cleanup discovery and estimates come from the backend. Targets are independently checked via RPC during preview and revalidated before signing: account existence, program, state, mint, wallet ownership/authority, and zero balance for token accounts. Buffers require loader ownership and wallet authority. Reward and stake transactions also receive independent RPC checks.
+- Cleanup discovery and scan estimates come from the backend. Claim previews use RPC-read account balances for estimates. Targets are independently checked via RPC during preview and revalidated before signing: account existence, program, state, mint, wallet ownership/authority, and zero balance for token accounts. Buffers require loader ownership and wallet authority. Reward and stake transactions also receive independent RPC checks.
 
 ### Core guarantees
 

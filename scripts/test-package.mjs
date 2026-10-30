@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -22,6 +22,27 @@ assert.equal(JSON.parse(readFileSync(join(installed, 'package.json'), 'utf8')).v
 
 const keypairPath = join(temp, 'generated-test-keypair.json');
 writeFileSync(keypairPath, JSON.stringify([...Keypair.generate().secretKey]), { mode: 0o600 });
+const invalidKeypairPath = join(temp, 'PRIVATE_PATH_MARKER.json');
+writeFileSync(invalidKeypairPath, '[PRIVATE_CONTENT_MARKER');
+const startupCases = [
+  { name: 'unreadable file', env: { SOLANA_KEYPAIR_PATH: join(temp, 'MISSING_PATH_MARKER.json') }, expected: 'Cannot read SOLANA_KEYPAIR_PATH' },
+  { name: 'invalid file', env: { SOLANA_KEYPAIR_PATH: invalidKeypairPath }, expected: 'Keypair file is not valid JSON or not a 64-byte secret key' },
+  { name: 'invalid private key', env: { SOLANA_PRIVATE_KEY: '[PRIVATE_CONTENT_MARKER' }, expected: 'SOLANA_PRIVATE_KEY must contain a valid 64-byte secret key' },
+  { name: 'disallowed API host', env: { UNCLAIMED_SOL_API_KEY: 'PRIVATE_API_KEY_MARKER', UNCLAIMED_SOL_API_URL: 'https://PRIVATE_HOST_MARKER.invalid' }, expected: 'UNCLAIMED_SOL_API_URL must use unclaimedsol.com' },
+  { name: 'malformed API URL', env: { UNCLAIMED_SOL_API_KEY: 'PRIVATE_API_KEY_MARKER', UNCLAIMED_SOL_API_URL: 'PRIVATE_URL_MARKER' }, expected: 'UNCLAIMED_SOL_API_URL must be a valid URL' },
+  { name: 'unexpected startup failure', env: { SOLANA_KEYPAIR_PATH: keypairPath, SOLANA_RPC_URL: 'PRIVATE_RPC_MARKER' }, expected: 'MCP_STARTUP_FAILED' },
+];
+for (const { name, env, expected } of startupCases) {
+  const result = spawnSync(process.execPath, [join(installed, 'dist/index.js')], {
+    cwd: temp, env: { PATH: process.env.PATH ?? '', ...env }, encoding: 'utf8', timeout: 10_000,
+  });
+  assert.ifError(result.error);
+  assert.equal(result.status, 1, name);
+  assert.equal(result.stdout, '', name);
+  assert.ok(result.stderr.includes(expected), `${name}: ${result.stderr}`);
+  assert.ok(!result.stderr.includes('MARKER') && !result.stderr.includes(temp), `${name}: private input leaked`);
+}
+console.log('PASS installed startup diagnostics: six failures classified without private input leaks');
 for (const claiming of [false, true]) {
   const client = new Client({ name: 'package-smoke', version: '1.0.0' });
   const transport = new StdioClientTransport({

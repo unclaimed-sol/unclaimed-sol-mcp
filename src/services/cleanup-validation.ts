@@ -145,12 +145,12 @@ export async function inspectCleanupTargets(
         const info = infos[i];
         if (isEmptyWalletTokenAccount(info, wallet, token) && info &&
           (!info.owner.equals(TOKEN_2022_PROGRAM_ID) || hasSupportedToken2022State(info, mintInfos.get(token.mintKey) ?? null))) {
-          verifiedTokens.push({ ...token, amountUi: 0, isFrozen: false });
+          verifiedTokens.push({ ...token, lamports: info.lamports, amountUi: 0, isFrozen: false });
         } else {
           skipped++;
         }
       } else if (isWalletBuffer(infos[i], wallet)) {
-        verifiedBuffers.push(buffers[index - tokens.length]);
+        verifiedBuffers.push({ ...buffers[index - tokens.length], lamports: infos[i]!.lamports });
       } else {
         skipped++;
       }

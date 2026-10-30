@@ -85,35 +85,12 @@ function isExcludedByNameOrSymbol(
 function buildTokenPreview(tokens: TokenAccountInfo[]): string {
   if (tokens.length === 0) return '';
 
-  const empty = tokens.filter((t) => t.amountUi === 0);
-  const nonEmpty = tokens.filter((t) => t.amountUi > 0);
-  const MAX_PER_GROUP = 8;
-  const lines: string[] = ['Empty token accounts selected for closure (safe mode):'];
-
-  const appendGroup = (
-    title: string,
-    group: TokenAccountInfo[],
-    includeBalance: boolean,
-  ) => {
-    if (group.length === 0) return;
-    lines.push('', `${title}:`);
-
-    for (const token of group.slice(0, MAX_PER_GROUP)) {
-      const base = `  - ${tokenLabel(token)} — ${shortenAddress(token.mintKey)}`;
-      if (!includeBalance) {
-        lines.push(base);
-        continue;
-      }
-      lines.push(`${base} (balance: ${token.amountUi})`);
-    }
-
-    if (group.length > MAX_PER_GROUP) {
-      lines.push(`  ...and ${group.length - MAX_PER_GROUP} more`);
-    }
-  };
-
-  appendGroup('Empty token accounts', empty, false);
-  appendGroup('Non-zero token accounts', nonEmpty, true);
+  const previewLimit = 8;
+  const lines = ['Empty token accounts selected for closure (safe mode):',
+    ...tokens.slice(0, previewLimit).map(token =>
+      `  - ${tokenLabel(token)} — ${shortenAddress(token.mintKey)}`),
+  ];
+  if (tokens.length > previewLimit) lines.push(`  ...and ${tokens.length - previewLimit} more`);
 
   return `\n\n${lines.join('\n')}`;
 }

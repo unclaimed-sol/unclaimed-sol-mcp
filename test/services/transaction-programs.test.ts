@@ -57,9 +57,9 @@ function derivePda(seeds: (string | PublicKey)[], programId: PublicKey): PublicK
   return pda;
 }
 
-function deriveAta(owner: PublicKey): PublicKey {
+function deriveAta(owner: PublicKey, mint: PublicKey = NATIVE_MINT): PublicKey {
   const [ata] = PublicKey.findProgramAddressSync(
-    [owner.toBuffer(), SPL_TOKEN_PROGRAM_ID.toBuffer(), NATIVE_MINT.toBuffer()],
+    [owner.toBuffer(), SPL_TOKEN_PROGRAM_ID.toBuffer(), mint.toBuffer()],
     ATA_PROGRAM_ID,
   );
   return ata;
@@ -1351,4 +1351,45 @@ describe('claim source and exact stake contract', () => {
     tx.add(new TransactionInstruction({ programId: ComputeBudgetProgram.programId, keys: [], data: Buffer.from([3]) }));
     expect(() => validateTransactionPrograms([tx], wallet, 300, 5_000_000_000)).toThrow('invalid ComputeBudget');
   });
+});
+
+describe('accumulator and creator-fee V2 account layouts', () => {
+  // Protocol fixtures are literal and independent of the production selectors.
+  const meta = (pubkey: PublicKey, isWritable = false, isSigner = false) => ({ pubkey, isWritable, isSigner });
+  const close = (programId: PublicKey, accumulator: PublicKey, event: PublicKey) => new TransactionInstruction({
+    programId, data: Buffer.from([249, 69, 164, 218, 150, 103, 84, 138]),
+    keys: [meta(wallet, true, true), meta(accumulator, true), meta(event), meta(programId)],
+  });
+  const creatorV2 = (mint: PublicKey) => new TransactionInstruction({
+    programId: PUMP_PROGRAM_ID, data: Buffer.from([207, 17, 138, 242, 4, 34, 19, 56]),
+    keys: [meta(wallet, true), meta(deriveAta(wallet, mint), true), meta(pumpCreatorVault, true),
+      meta(deriveAta(pumpCreatorVault, mint), true), meta(mint), meta(SPL_TOKEN_PROGRAM_ID),
+      meta(ATA_PROGRAM_ID), meta(SystemProgram.programId), meta(pumpEventAuthority), meta(PUMP_PROGRAM_ID)],
+  });
+  const fixtures = [
+    { name: 'Pump close accumulator', build: () => close(PUMP_PROGRAM_ID, pumpAccumulator, pumpEventAuthority) },
+    { name: 'PumpSwap close accumulator', build: () => close(PUMP_AMM_PROGRAM_ID, pumpSwapAccumulator, pumpSwapEventAuthority) },
+    { name: 'PumpSwap init accumulator', build: () => new TransactionInstruction({
+      programId: PUMP_AMM_PROGRAM_ID, data: Buffer.from([94, 6, 202, 115, 255, 96, 232, 183]),
+      keys: [meta(wallet, true, true), meta(wallet), meta(pumpSwapAccumulator, true),
+        meta(SystemProgram.programId), meta(pumpSwapEventAuthority), meta(PUMP_AMM_PROGRAM_ID)],
+    }) },
+    { name: 'Pump collect_creator_fee V2 WSOL', build: () => creatorV2(NATIVE_MINT) },
+    { name: 'Pump collect_creator_fee V2 USDC', build: () => creatorV2(new PublicKey('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v')) },
+  ];
+  const validate = (instruction: TransactionInstruction) => validateTransactionPrograms(
+    [buildTx(instruction, makePumpSwapClaimCashback())], wallet, 300, 0, 0, 0n, 'rewards',
+  );
+  for (const fixture of fixtures) {
+    it(`accepts ${fixture.name}`, () => {
+      expect(() => validate(fixture.build())).not.toThrow();
+    });
+    for (let index = 0; index < fixture.build().keys.length; index++) {
+      it(`rejects ${fixture.name} with wrong key at position ${index}`, () => {
+        const instruction = fixture.build();
+        instruction.keys[index].pubkey = randomKey;
+        expect(() => validate(instruction)).toThrow(TransactionValidationError);
+      });
+    }
+  }
 });

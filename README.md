@@ -99,6 +99,8 @@ Claim SOL from deactivated stake accounts. Requires a configured keypair. Uses t
 
 **Inputs:** `wallet_address` (optional in claim-enabled mode, defaults to configured keypair wallet), `dry_run` (default true), `execution_token`, `stake_accounts` (optional array)
 
+When `stake_accounts` is supplied for a dry run, the backend must build exactly that set or the preview fails. Leave out accounts that are still deactivating or otherwise cannot be withdrawn. Execution uses the set saved with the execution token; changing `stake_accounts` requires a new dry run.
+
 ## Example prompts
 
 - "Scan my wallet for reclaimable SOL"
@@ -316,9 +318,9 @@ The pre-sign validator (`validateTransactionPrograms`) provides different levels
 - **`claim_stakes`** — Withdraw amounts are checked against live account balances, wallet withdrawal authority, lockup, sysvars, and full-withdrawal simulation during preview and execution. Fee arithmetic uses bigint.
 - **`claim_rewards`** — Pump/PumpSwap only. Discriminators and account addresses are checked against locally derived PDAs/ATAs. Native SOL and USDC service fees are capped using live source balances, rent reserves and integer arithmetic at preview and execution.
 
-RPC reads and simulations are snapshots. Selector 2 prevents burning newly deposited tokens and closing funded WSOL, but does not guarantee exact proceeds, account counts or buffer-content approvals. Reward balances may change before execution; a fee bounded by the last observed reward is not a guarantee of realized proceeds. The backend currently has an unversioned contract; MCP rejects any advertised contract version until its schema is implemented. See [SECURITY.md](SECURITY.md) for the trust assumptions.
+RPC reads and simulations are snapshots. Selector 2 prevents burning newly deposited tokens and closing funded WSOL, but does not guarantee exact proceeds, account counts or buffer-content approvals. Reward balances may change before execution; a fee bounded by the last observed reward is not a guarantee of realized proceeds. See [SECURITY.md](SECURITY.md) for the trust assumptions.
 
-The configured cluster must have selector 2 deployed. Mainnet program bytes were verified on 2026-10-30 against Rust commit `1f2b10a` and SBF SHA-256 `40c9eb68c0a6e835d8789e87da2aa5f67b9cb18498814078b75e2129b44054aa`. This is a dated deployment check, not runtime attestation of future upgrades.
+The configured cluster must have selector 2 deployed. Mainnet program bytes were verified on 2026-10-30 against Rust commit `1f2b10a` and SBF SHA-256 `40c9eb68c0a6e835d8789e87da2aa5f67b9cb18498814078b75e2129b44054aa`. The [deployment verification record and remaining release check](docs/verification/2026-10-30-upstream.md) preserve the evidence. This is a dated deployment check, not runtime attestation of future upgrades.
 
 ## Local cleanup integration test
 

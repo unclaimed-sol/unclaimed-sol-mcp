@@ -2,6 +2,8 @@
 
 ## 2.0.0 - Unreleased
 
+- Migration from 1.x: dust token accounts with a positive balance are now skipped as ineligible instead of being burned.
+- Report specific, sanitized startup configuration errors without exposing key material, file paths or endpoint URLs. Use RPC-read balances for cleanup preview estimates.
 - Require Node.js 20 or newer; signing/API-key configurations now require the production HTTPS host unless the development override is explicitly enabled.
 - Preserve token/buffer cleanup's dry-run and execution-token flow and exclusions. Use SDK 1.4.0's selector 2 for token cleanup, enforcing empty balances at execution without burning or falling back to selector 0. Buffer selector 1 is unchanged.
 - Revalidate targets at preview and execution, including native reserves and supported Token-2022 account/mint extensions before applying the eligible-account limit. Skip funded and unsynchronized WSOL.

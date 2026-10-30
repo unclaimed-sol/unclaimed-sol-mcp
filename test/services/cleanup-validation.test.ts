@@ -10,6 +10,18 @@ function account() {
   return {data,owner:SPL_TOKEN_PROGRAM_ID,lamports:1,executable:false,rentEpoch:0};
 }
 describe('cleanup RPC gate',()=>{
+  it('uses RPC lamports for both token and buffer estimates without changing the discovery objects', async () => {
+    const tokenInfo = { ...account(), lamports: 2_039_280 };
+    const data = Buffer.alloc(37); data.writeUInt32LE(1); data[4] = 1; wallet.toBuffer().copy(data, 5);
+    const bufferInfo = { ...account(), data, owner: new PublicKey(BPF_LOADER_UPGRADEABLE), lamports: 5_000_000 };
+    const buffer = { pubkey: Keypair.generate().publicKey.toBase58(), lamports: 1 };
+    const rpc = { getMultipleAccountsInfo: vi.fn(async () => [tokenInfo, bufferInfo]) };
+    const result = await inspectCleanupTargets(rpc, wallet, [token], [buffer]);
+    expect(result.tokens[0].lamports).toBe(2_039_280);
+    expect(result.buffers[0].lamports).toBe(5_000_000);
+    expect(token.lamports).toBe(1);
+    expect(buffer.lamports).toBe(1);
+  });
   it.each(['missing','program','mint','owner','state','close'])('skips an invalid %s target without losing the valid target',async kind=>{
     const bad=account(), target={...token,pubKey:token.pubKey};
     if(kind==='program') bad.owner=Keypair.generate().publicKey;

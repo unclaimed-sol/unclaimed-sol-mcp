@@ -8,7 +8,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { logHost, loadConfig } from './config.js';
+import { ConfigError, logHost, loadConfig } from './config.js';
 import { ScannerService } from './services/scanner.js';
 import { TransactionBuilder } from './services/transaction.js';
 import { SignerService } from './services/signer.js';
@@ -105,6 +105,8 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error('Fatal: MCP_STARTUP_FAILED. Check configuration and local file permissions.');
+  console.error(err instanceof ConfigError
+    ? `Fatal: ${err.message}`
+    : 'Fatal: MCP_STARTUP_FAILED. Check configuration and local file permissions.');
   process.exit(1);
 });

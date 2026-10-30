@@ -9,7 +9,7 @@ The main security boundary is: **transactions are validated locally before signi
 
 - The machine running this MCP server is trusted.
 - The configured Solana keypair is controlled by the user.
-- The configured Solana RPC and deployed program are trusted. RPC account reads and simulation are part of stake validation.
+- The configured Solana RPC and deployed program are trusted. RPC reads and simulation support token cleanup and stake validation. Token cleanup requires the deployed selector 2 instruction.
 - Cleanup discovery and estimates come from the backend. Targets are independently checked via RPC during preview and revalidated before signing: account existence, program, state, mint, wallet ownership/authority, and zero balance for token accounts. Buffers require loader ownership and wallet authority. Reward and stake transactions also receive independent RPC checks.
 
 ### Core guarantees
@@ -19,7 +19,9 @@ The main security boundary is: **transactions are validated locally before signi
 - **No blind signing**: every transaction is validated before signing.
 - **Two-step execution for claims**: `dry_run -> execution_token -> execute`.
 - **Short-lived, single-wallet execution tokens**: 60s TTL, one active token per wallet, consumed atomically before execution network calls, including failed or ambiguous attempts.
-- **Cleanup previews**: a dry run shows RPC-validated accounts and issues a single-use execution token. Ineligible accounts are skipped and counted at preview and execution; empty WSOL is accepted and funded WSOL is dropped. RPC failures propagate as errors. Exclusions can only reduce the previewed selection.
+- **Cleanup previews**: a dry run shows RPC-validated accounts and issues a single-use execution token. Ineligible accounts are skipped and counted before the eligible-account limit, including unsupported Token-2022 extensions and funded/unsynchronized WSOL. Empty WSOL must match its recorded native reserve. RPC failures propagate as errors. Exclusions can only reduce the previewed selection.
+- **Execution-time token safety**: SDK 1.4.0 builds selector 2, which never burns tokens and skips newly funded accounts at execution. Local validation rejects selector 0 and direct token burns. There is no fallback. Buffer selector 1 remains unchanged.
+- **Simulation evidence**: standalone token-cleanup transactions require a complete successful simulation with an attributable program summary before signing. Zero-recovery batches are not submitted. Simulations do not settle earlier submissions or prove future account closures; ambiguous send/confirmation outcomes still stop the batch without retry.
 - **Bounded fees and instruction validation**:
   - `claim_sol`: local instruction construction + program allowlist checks.
   - `claim_rewards` and `claim_stakes`: strict structural checks on backend-built transactions, including account layouts, discriminators, claim requirements, and fee caps.
@@ -36,7 +38,7 @@ The main security boundary is: **transactions are validated locally before signi
 ### Threats not fully mitigated
 
 - Compromise of the local machine or local key material.
-- Backend omissions or inaccurate estimates, and changes after RPC validation. The legacy cleanup program does not bind amounts atomically; pre-sign checks do not eliminate the race between reading account state and execution.
+- Backend omissions or inaccurate estimates, and changes after RPC validation. Token eligibility is enforced on-chain, but previews do not bind exact proceeds or account counts. Buffer balances/content are not atomically approved by the preview. Wallet balance changes can include unrelated activity.
 - Reward fee caps use observed balances, not guaranteed realized proceeds.
 - Malicious or unstable RPC behavior causing failed or delayed execution.
 
@@ -54,7 +56,7 @@ If you find a security issue, open a private security advisory in the GitHub rep
 
 ## Remaining dependency advisories
 
-Reviewed 2026-10-14; owner: MCP repository maintainer (@nedim1511); expires
+Reviewed 2026-10-30; owner: MCP repository maintainer (@nedim1511); expires
 2026-11-13. Production audit: zero critical/high, five moderate affected packages
 (including parent dependency propagation). CI rejects any critical/high finding.
 

@@ -1,10 +1,11 @@
-import { Connection, Keypair, Transaction, PublicKey, SendTransactionError } from '@solana/web3.js';
+import { Connection, Keypair, Transaction, PublicKey, SendTransactionError, VersionedTransaction } from '@solana/web3.js';
 import bs58 from 'bs58';
 import { verifyRewardFees } from './reward-validation.js';
 import { verifyStakeAccounts } from './stake-validation.js';
 import { inspectCleanupTargets } from './cleanup-validation.js';
 import { TokenAccountInfo, BufferAccountInfo } from './scanner.js';
 import { Config } from '../config.js';
+import { closeEmptyTargetCount, simulatedCloseCount } from './cleanup-simulation.js';
 
 export interface SendResult {
   signature: string;
@@ -65,6 +66,25 @@ export class SignerService {
         const { blockhash, lastValidBlockHeight } = await this.connection.getLatestBlockhash('confirmed');
         const tx = Transaction.from(preparedBytes);
         tx.recentBlockhash = blockhash;
+        const cleanupTargets = closeEmptyTargetCount(tx);
+        if (cleanupTargets !== null) {
+          // VersionedTransaction also accepts a legacy Message. The config
+          // overload avoids web3.js's legacy simulation blockhash cache.
+          const simulation = await this.connection.simulateTransaction(new VersionedTransaction(tx.compileMessage()), {
+            sigVerify: false, commitment: 'confirmed',
+          });
+          if (simulation.value.err) {
+            results.push({ signature: '', status: 'failed', error: 'PREFLIGHT_REJECTED' });
+            continue;
+          }
+          const closed = simulatedCloseCount(simulation.value.logs, cleanupTargets);
+          if (closed === null || closed === 0) {
+            results.push({ signature: '', status: 'failed', error: closed === 0
+              ? 'NO_RECOVERY: no eligible token accounts; not submitted'
+              : 'CLEANUP_SIMULATION_UNVERIFIED: not submitted' });
+            continue;
+          }
+        }
         tx.sign(keypair);
         const bytes = tx.serialize();
         signature = bs58.encode(tx.signature!);

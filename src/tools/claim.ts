@@ -41,6 +41,12 @@ function shortenAddress(value: string): string {
   return `${value.slice(0, 4)}...${value.slice(-4)}`;
 }
 
+function formatBalanceChange(sol: number | null): string {
+  if (sol === null) return 'unavailable (balance RPC failed; see signatures)';
+  if (sol === 0) return '0 SOL';
+  return `${sol < 0 ? '-' : ''}${formatSol(Math.abs(sol))}`;
+}
+
 function tokenLabel(token: TokenAccountInfo): string {
   const symbol = token.symbol?.trim();
   const name = token.name?.trim();
@@ -306,7 +312,7 @@ export async function handleClaim(
 
       // Irreversibility warning
       text +=
-        `\n\nThis will permanently close these accounts. This action is irreversible. For a visual breakdown of ` +
+        `\n\nEligible accounts will be permanently closed. Accounts that become ineligible may be skipped; estimates are not guaranteed proceeds. This action is irreversible. For a visual breakdown of ` +
         `each account, review at ${url} before proceeding.`;
 
       if (plan.tokenAccountCount > 0) {
@@ -397,18 +403,18 @@ export async function handleClaim(
     if (failed.length === 0) {
       text =
         `Confirmed ${confirmed.length} transactions targeting ${plan.tokenAccountCount} token accounts and ${plan.bufferAccountCount} buffer accounts.\n\n` +
-        `Confirmed net: ${netSol === null ? 'unavailable (balance RPC failed; see signatures)' : formatSol(Math.max(0, netSol))} (wallet balance change, inclusive of priority fees)\n\n` +
+        `Observed wallet balance change: ${formatBalanceChange(netSol)} (includes network fees and any concurrent wallet activity)\n\n` +
         `Signatures:\n${confirmed.map((r, i) => `${i + 1}. ${r.signature}`).join('\n')}`;
     } else if (confirmed.length > 0) {
       text =
         `Partial claim: ${confirmed.length}/${results.length} txs confirmed.\n\n` +
-        `Confirmed net so far: ${netSol === null ? 'unavailable (balance RPC failed; see signatures)' : formatSol(Math.max(0, netSol))} (wallet balance change)\n\n` +
+        `Observed wallet balance change: ${formatBalanceChange(netSol)} (includes network fees and any concurrent wallet activity)\n\n` +
         `Successful:\n${confirmed.map((r, i) => `${i + 1}. ${r.signature}`).join('\n')}\n\n` +
-        `Failed:\n${failed.map((r, i) => `${i + 1}. ${r.error || 'unknown'}${r.signature ? ` — ${r.signature}` : ''}`).join('\n')}\n\n` +
+        `Not confirmed:\n${failed.map((r, i) => `${i + 1}. ${r.error || 'unknown'}${r.signature ? ` — ${r.signature}` : ''}`).join('\n')}\n\n` +
         `Run claim_sol again (dry_run first) to retry.`;
     } else {
       text =
-        `All ${results.length} transactions failed.\n\n` +
+        `No transactions confirmed (${results.length} attempted or checked).\n\n` +
         `${failed.map((r, i) => `${i + 1}. ${r.error || 'unknown'}${r.signature ? ` — ${r.signature}` : ''}`).join('\n')}\n\n` +
         `Run claim_sol again (dry_run first) to retry.`;
     }
@@ -416,6 +422,9 @@ export async function handleClaim(
     if (results.some(result => result.status === 'unknown')) {
       text = 'Submission outcome is uncertain. Check these signatures before a fresh dry run.\n\n' +
         results.map(result => `${result.status}: ${result.signature || '(not submitted)'} ${result.error ?? ''}`).join('\n');
+    }
+    if (confirmed.length > 0 && plan.tokenAccountCount > 0) {
+      text += '\n\nA confirmed transaction may skip token accounts that became ineligible. Account counts above are targets, not verified closures.';
     }
 
     if (checked.skipped > 0) text = `Skipped ${checked.skipped} ineligible account(s) during execution revalidation.\n\n${text}`;

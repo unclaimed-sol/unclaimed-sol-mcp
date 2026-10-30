@@ -53,7 +53,7 @@ export const DEFAULT_API_URL = 'https://unclaimedsol.com';
 // URLs
 export const WEBSITE_URL = 'https://unclaimedsol.com';
 
-// Token batching — how many pairs per burn-and-close instruction.
+// Token batching — how many pairs per close-empty instruction.
 // Each pair adds ~2 accounts (mint + ATA) = ~66 bytes. Legacy tx limit is 1232 bytes
 // with ~323 bytes fixed overhead, so max ~13 pairs. Using 12 for safe margin.
 export const TOKEN_PAIRS_PER_IX = 12;

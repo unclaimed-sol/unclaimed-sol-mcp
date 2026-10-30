@@ -33,7 +33,7 @@ function setup() {
   const rpc = vi.fn(async (keys:PublicKey[]) => keys.map(key => {
     const data = Buffer.alloc(key.toBase58() === buffer.pubkey ? 37 : 165);
     if (data.length === 37) { data.writeUInt32LE(1); data[4]=1; keypair.publicKey.toBuffer().copy(data,5); }
-    else { new PublicKey(token.mintKey).toBuffer().copy(data); keypair.publicKey.toBuffer().copy(data,32); data[108]=1; data.writeBigUInt64LE(funded ? 1n : 0n,64); if(token.mintKey===NATIVE_MINT.toBase58()) data.writeUInt32LE(1,109); }
+    else { new PublicKey(token.mintKey).toBuffer().copy(data); keypair.publicKey.toBuffer().copy(data,32); data[108]=1; data.writeBigUInt64LE(funded ? 1n : 0n,64); if(token.mintKey===NATIVE_MINT.toBase58()) { data.writeUInt32LE(1,109); data.writeBigUInt64LE(2_039_280n,113); } }
     return {data,owner:data.length===37 ? new PublicKey(BPF_LOADER_UPGRADEABLE) : SPL_TOKEN_PROGRAM_ID,lamports:2_039_280,executable:false,rentEpoch:0};
   }));
   (signer as unknown as {connection:unknown}).connection = {getMultipleAccountsInfo:rpc};
@@ -68,7 +68,7 @@ describe('published cleanup execution flow',()=>{
     executionToken(preview);
     expect(preview.content[0].text).toContain('44 additional account(s) were not previewed; run claim_sol again after this claim');
     expect(preview.content[0].text).toContain('Skipped 256 ineligible');
-    expect(preview.content[0].text).toContain('This will permanently close these accounts.');
+    expect(preview.content[0].text).toContain('Eligible accounts will be permanently closed.');
     expect(preview.content[0].text).not.toContain('burn');
   });
   it('keeps empty wrapped-SOL candidates compatible with the existing flow',async()=>{
@@ -166,6 +166,24 @@ describe('published cleanup execution flow',()=>{
     expect((await run({dry_run:false})).isError).toBe(true);
     expect((await run({dry_run:false,execution_token:'invalid'})).isError).toBe(true);
     expect(signer.signAndSendBatch).not.toHaveBeenCalled();
+  });
+  it('reports no-recovery simulation without claiming a completed cleanup',async()=>{
+    const {run,signer}=setup();
+    const execution_token=executionToken(await run({}));
+    vi.mocked(signer.signAndSendBatch).mockResolvedValueOnce([{status:'failed',signature:'',error:'NO_RECOVERY: no eligible token accounts; not submitted'}]);
+    const result=await run({dry_run:false,execution_token});
+    expect(result.content[0].text).toContain('No transactions confirmed');
+    expect(result.content[0].text).toContain('not submitted');
+    expect(result.content[0].text).not.toContain('Confirmed net');
+    expect((await run({dry_run:false,execution_token})).isError).toBe(true);
+  });
+  it('reports observed negative wallet changes and qualifies target counts',async()=>{
+    const {run,signer}=setup();
+    const execution_token=executionToken(await run({}));
+    vi.mocked(signer.getBalance).mockResolvedValueOnce(1_000_000_000).mockResolvedValueOnce(999_000_000);
+    const result=await run({dry_run:false,execution_token});
+    expect(result.content[0].text).toContain('-0.0010 SOL');
+    expect(result.content[0].text).toContain('not verified closures');
   });
   it('retains destructive execution metadata and the existing input interface',()=>{
     const tool=getClaimToolDefinition();

@@ -79,7 +79,9 @@ Closes empty token accounts and program buffers to reclaim rent. A dry run check
 
 **Inputs:** `wallet_address` (defaults to configured keypair wallet), `dry_run` (default true), `execution_token`, `max_transactions` (default 10, maximum 25), `exclude` (optional symbols/names to skip during execution).
 
-Cleanup targets are revalidated via RPC before signing. Ineligible accounts are skipped and counted, including funded tokens; empty wrapped SOL is accepted. Review the preview: account closure is irreversible. RPC checks are snapshots: the legacy program does not bind amounts atomically, so balances can still change between validation and execution.
+Cleanup targets are revalidated via RPC before signing. Token cleanup uses SDK 1.4.0's close-empty instruction (selector 2), which checks eligibility during execution and never burns tokens. Accounts receiving new token deposits or newly funded wrapped SOL are skipped at execution. Empty wrapped SOL is accepted only when its lamports equal its recorded native reserve; funded and unsynchronized WSOL are skipped. There is no fallback to legacy burning.
+
+Token-2022 support follows the program's conservative extension set: token accounts may have `ImmutableOwner` and/or `TransferFeeAmount`; mints may have `TransferFeeConfig`. Transfer-fee extensions must match. Other extensions, including metadata extensions, are skipped before the 256-eligible-account preview limit. The execution simulation must provide a complete, attributable cleanup summary; an all-skipped transaction is not submitted. Accounts can still change after simulation, so a confirmed transaction does not guarantee every target closed. Previews are estimates, and reported wallet balance changes include network fees and concurrent activity. Buffers retain their existing close instruction and authority checks.
 
 ### `claim_rewards`
 
@@ -270,7 +272,7 @@ Using local build:
 | `UNCLAIMED_SOL_API_KEY` | No | API key sent as `Authorization: Bearer` header. |
 | `SOLANA_KEYPAIR_PATH` | No | Path to Solana keypair JSON file. Enables Vibe Claiming. |
 | `SOLANA_PRIVATE_KEY` | No | Private key as base58 string or JSON byte array. Use `SOLANA_KEYPAIR_PATH` instead when possible. |
-| `SOLANA_RPC_URL` | No | Solana RPC endpoint. Defaults to `https://api.mainnet-beta.solana.com`. Claim dry runs read account state and simulate stake withdrawals through this endpoint, so a dedicated RPC is strongly recommended for claiming; the public endpoint rate-limits these reads. |
+| `SOLANA_RPC_URL` | No | Solana RPC endpoint. Defaults to `https://api.mainnet-beta.solana.com`. Claim dry runs read account state, including Token-2022 mints, and simulate stake withdrawals. Token cleanup is also simulated before submission, so a dedicated RPC is strongly recommended for claiming. |
 | `SOLANA_PRIORITY_FEE` | No | Priority fee in microlamports per compute unit. Default: 1,000. Max: 200,000. |
 
 ## Security
@@ -290,8 +292,8 @@ Program ID: `UNCaXzXkR3vp8mbCJyxWUvwuRk5uHgzrwe6jcWPfiUR` (from the pinned SDK).
 ### Token/buffer claims (`claim_sol`)
 
 1. The MCP server calls the UnclaimedSOL backend to fetch reclaimable token and buffer accounts.
-2. Instructions are built using the [`@unclaimedsol/spl-burn-close-sdk`](https://www.npmjs.com/package/@unclaimedsol/spl-burn-close-sdk) to close the previewed empty token accounts and program buffers.
-3. Execution atomically consumes the token before network calls, validates the locally built transactions, and signs each transaction immediately before its first send.
+2. Token instructions use `buildCloseEmptyTokenAccountsInstruction` from pinned [`@unclaimedsol/spl-burn-close-sdk` 1.4.0](https://www.npmjs.com/package/@unclaimedsol/spl-burn-close-sdk). Buffer instructions are built locally using their existing selector 1.
+3. Execution atomically consumes the token before network calls, revalidates targets and instructions, simulates token cleanup, and signs each transaction immediately before its first send. A rejected or unverified simulation is not submitted; there is no legacy retry.
 4. The current program source charges the greater of 2% of recovered token-account lamports or the amount above 0.002 SOL, plus 5% for buffers. Verify the deployed binary before changing fee policy. No funds pass through the MCP server.
 
 ### Rewards claims (`claim_rewards`)
@@ -310,11 +312,17 @@ Program ID: `UNCaXzXkR3vp8mbCJyxWUvwuRk5uHgzrwe6jcWPfiUR` (from the pinned SDK).
 
 The pre-sign validator (`validateTransactionPrograms`) provides different levels of protection depending on the claim type:
 
-- **`claim_sol`** — Discovery and estimates use the backend safe-mode response. RPC checks require empty token accounts (including empty WSOL) with the expected mint, program, wallet owner and close authority, or loader-owned buffers with wallet authority. All previewed targets are revalidated before signing. Transactions are built locally and checked against the program/fee-vault allowlist; legacy instructions remain executable.
+- **`claim_sol`** — Discovery and estimates use the backend safe-mode response. RPC checks require empty token accounts with the expected mint, program, wallet owner, close authority, native reserve and supported Token-2022 extensions, or loader-owned buffers with wallet authority. All previewed targets are revalidated before signing. Transactions are built locally; pre-sign validation rejects legacy token cleanup selector 0 and direct token burns. Selector 2 enforces token eligibility during execution. Buffers continue to use selector 1.
 - **`claim_stakes`** — Withdraw amounts are checked against live account balances, wallet withdrawal authority, lockup, sysvars, and full-withdrawal simulation during preview and execution. Fee arithmetic uses bigint.
 - **`claim_rewards`** — Pump/PumpSwap only. Discriminators and account addresses are checked against locally derived PDAs/ATAs. Native SOL and USDC service fees are capped using live source balances, rent reserves and integer arithmetic at preview and execution.
 
-RPC reads are snapshots, not atomic on-chain assertions. Reward balances may change before execution; a fee bounded by the last observed reward is not a guarantee of realized proceeds. Atomic cleanup amount approvals require a separate coordinated program/SDK change; they are not provided by this release. The backend currently has an unversioned contract; MCP rejects any advertised contract version until its schema is implemented. See [SECURITY.md](SECURITY.md) for the trust assumptions.
+RPC reads and simulations are snapshots. Selector 2 prevents burning newly deposited tokens and closing funded WSOL, but does not guarantee exact proceeds, account counts or buffer-content approvals. Reward balances may change before execution; a fee bounded by the last observed reward is not a guarantee of realized proceeds. The backend currently has an unversioned contract; MCP rejects any advertised contract version until its schema is implemented. See [SECURITY.md](SECURITY.md) for the trust assumptions.
+
+The configured cluster must have selector 2 deployed. Mainnet program bytes were verified on 2026-10-30 against Rust commit `1f2b10a` and SBF SHA-256 `40c9eb68c0a6e835d8789e87da2aa5f67b9cb18498814078b75e2129b44054aa`. This is a dated deployment check, not runtime attestation of future upgrades.
+
+## Local cleanup integration test
+
+After `npm ci`, run `npm run test:cleanup-runtime -- /path/to/unclaimed-sol-rust-program`. This requires `solana-test-validator` and the reviewed Rust SBF artifact. It uses an isolated local ledger and generated test keys, exercises MCP preview/build/sign/send against both token programs, and checks late deposits, exact fees and all-skipped submissions. No production wallet or funds are used. Unit tests run with `npm test`.
 
 ## Project structure
 
@@ -335,7 +343,10 @@ src/
   services/
     scanner.ts          Backend API client (scan, tokens, buffers, rewards, stakes)
     transaction.ts      Transaction building + pre-sign validation
-    signer.ts           Batch sign, send, confirm with retry
+    cleanup-validation.ts  RPC eligibility and bounded candidate selection
+    cleanup-extensions.ts  Supported Token-2022 extension filter
+    cleanup-simulation.ts  Attributed close-empty simulation summaries
+    signer.ts           Simulate cleanup, sign, send once, and confirm
 ```
 
 ## License

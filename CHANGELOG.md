@@ -3,7 +3,10 @@
 ## 2.0.0 - Unreleased
 
 - Require Node.js 20 or newer; signing/API-key configurations now require the production HTTPS host unless the development override is explicitly enabled.
-- Preserve token/buffer cleanup's dry-run and execution-token flow and exclusions. Revalidate cleanup targets via RPC at preview and before signing; skip and count ineligible accounts, accept empty WSOL and drop funded WSOL. Legacy instructions still do not bind amounts atomically.
+- Preserve token/buffer cleanup's dry-run and execution-token flow and exclusions. Use SDK 1.4.0's selector 2 for token cleanup, enforcing empty balances at execution without burning or falling back to selector 0. Buffer selector 1 is unchanged.
+- Revalidate targets at preview and execution, including native reserves and supported Token-2022 account/mint extensions before applying the eligible-account limit. Skip funded and unsynchronized WSOL.
+- Simulate standalone token cleanup before signing; do not submit all-skipped, rejected or unverified simulations. Report transaction targets and observed wallet balance changes without promising exact closures or proceeds.
+- Upgrade Zod to 4.6.7 and refresh compatible transitive dependencies to resolve new high-severity audit findings; retain the documented web3.js/Jayson moderate advisories.
 - Consume execution tokens atomically, sign each unsent transaction with a fresh blockhash, and never retry an ambiguous submission. Preserve signatures when post-submit balance reads fail.
 - Report proven preflight rejections (Transaction simulation failed) as failed and continue with the next transaction; ambiguous send/confirmation errors still stop the batch without retry.
 - Allow token-only cleanup previews when buffer discovery reports an expected scanner error, with an explicit unavailable notice. Unexpected buffer errors still fail.

@@ -2,7 +2,7 @@
  * Tests for TransactionBuilder.validateTransactions (local claim_sol path)
  * and buildClaimPlan (core claim_sol batching logic).
  */
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import {
   PublicKey,
   Transaction,
@@ -29,32 +29,6 @@ import {
 } from '@unclaimedsol/spl-burn-close-sdk';
 import type { TokenAccountInfo, BufferAccountInfo } from '../../src/services/scanner.js';
 import type { Config } from '../../src/config.js';
-
-// Mock the SDK's buildBurnAndCloseInstruction
-vi.mock('@unclaimedsol/spl-burn-close-sdk', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@unclaimedsol/spl-burn-close-sdk')>();
-  return {
-    ...actual,
-    buildBurnAndCloseInstruction: vi.fn(async (programId, user, pairs, tokenProgramId) => {
-      // Return a dummy instruction with keys proportional to pairs
-      const keys = [
-        { pubkey: user, isSigner: true, isWritable: true },
-        { pubkey: actual.FEE_RECIPIENT, isSigner: false, isWritable: true },
-        { pubkey: tokenProgramId, isSigner: false, isWritable: false },
-        { pubkey: programId, isSigner: false, isWritable: false },
-        ...pairs.flatMap((p: { mint: PublicKey; ata: PublicKey }) => [
-          { pubkey: p.mint, isSigner: false, isWritable: false },
-          { pubkey: p.ata, isSigner: false, isWritable: true },
-        ]),
-      ];
-      return new TransactionInstruction({
-        keys,
-        programId,
-        data: Buffer.from([0]),
-      });
-    }),
-  };
-});
 
 const wallet = Keypair.generate().publicKey;
 const feeVaultKey = new PublicKey(FEE_VAULT);
@@ -115,7 +89,7 @@ describe('TransactionBuilder.validateTransactions', () => {
           { pubkey: feeVaultKey, isSigner: false, isWritable: true },
         ],
         programId: SDK_PROGRAM_ID,
-        data: Buffer.from([0]),
+        data: Buffer.from([2]),
       }),
     );
     return tx;
@@ -152,7 +126,7 @@ describe('TransactionBuilder.validateTransactions', () => {
             { pubkey: feeVaultKey, isSigner: false, isWritable: true },
           ],
           programId: SDK_PROGRAM_ID,
-          data: Buffer.from([0]),
+          data: Buffer.from([2]),
         }),
       );
       // Skip if this IS the UnclaimedSOL program (already added above with fee vault)
@@ -200,7 +174,7 @@ describe('TransactionBuilder.validateTransactions', () => {
           { pubkey: feeVaultKey, isSigner: false, isWritable: true },
         ],
         programId: SDK_PROGRAM_ID,
-        data: Buffer.from([0]),
+        data: Buffer.from([2]),
       }),
     );
     // System instruction writing to a random unknown account
@@ -227,7 +201,7 @@ describe('TransactionBuilder.validateTransactions', () => {
           { pubkey: feeVaultKey, isSigner: false, isWritable: true },
         ],
         programId: SDK_PROGRAM_ID,
-        data: Buffer.from([0]),
+        data: Buffer.from([2]),
       }),
     );
     tx.add(
@@ -249,7 +223,7 @@ describe('TransactionBuilder.validateTransactions', () => {
           { pubkey: feeVaultKey, isSigner: false, isWritable: true },
         ],
         programId: SDK_PROGRAM_ID,
-        data: Buffer.from([0]),
+        data: Buffer.from([2]),
       }),
     );
     tx.add(
@@ -272,7 +246,7 @@ describe('TransactionBuilder.validateTransactions', () => {
           { pubkey: Keypair.generate().publicKey, isSigner: false, isWritable: true },
         ],
         programId: SDK_PROGRAM_ID,
-        data: Buffer.from([0]),
+        data: Buffer.from([2]),
       }),
     );
     expect(() => builder.validateTransactions([tx], wallet)).toThrow(

@@ -8,8 +8,9 @@ import {
   SYSVAR_STAKE_HISTORY_PUBKEY,
 } from '@solana/web3.js';
 import {
-  buildBurnAndCloseInstruction,
+  buildCloseEmptyTokenAccountsInstruction,
   PROGRAM_ID as SDK_PROGRAM_ID,
+  TOKEN_2022_PROGRAM_ID,
 } from '@unclaimedsol/spl-burn-close-sdk';
 import type { Pair } from '@unclaimedsol/spl-burn-close-sdk';
 import {
@@ -79,7 +80,7 @@ export class TransactionBuilder {
     const activeTokens = tokens.filter((t) => !t.isFrozen);
 
     // ---- GROUP TOKENS BY TOKEN PROGRAM ----
-    // buildBurnAndCloseInstruction needs the tokenProgramId, and you can't
+    // The close-empty builder needs the tokenProgramId, and you can't
     // mix SPL Token and Token-2022 accounts in the same instruction.
     const SPL_TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 
@@ -102,7 +103,7 @@ export class TransactionBuilder {
           ata: new PublicKey(t.pubKey),
         }));
 
-        const ix = await buildBurnAndCloseInstruction(
+        const ix = await buildCloseEmptyTokenAccountsInstruction(
           SDK_PROGRAM_ID,
           walletPubkey,
           pairs,
@@ -263,6 +264,15 @@ export class TransactionBuilder {
               `Tx ${i + 1}: UnclaimedSOL program instruction missing fee vault`,
             );
           }
+          // Token cleanup must never fall back to the legacy burn selector.
+          // Buffer cleanup retains its existing selector and contract.
+          if (ix.data.length !== 1 || (ix.data[0] !== 1 && ix.data[0] !== 2)) {
+            throw new TransactionValidationError(`Tx ${i + 1}: unsupported cleanup instruction`);
+          }
+        }
+        if ((pid === SPL_TOKEN_PROGRAM_ID.toBase58() || pid === TOKEN_2022_PROGRAM_ID.toBase58()) &&
+          (ix.data[0] === 8 || ix.data[0] === 15)) {
+          throw new TransactionValidationError(`Tx ${i + 1}: token burn is not allowed in cleanup`);
         }
       }
     }

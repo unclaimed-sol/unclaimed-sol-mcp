@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.0.0 - Unreleased
+## 2.0.0 - 2026-10-30
 
 - Migration from 1.x: dust token accounts with a positive balance are now skipped as ineligible instead of being burned.
 - Report specific, sanitized startup configuration errors without exposing key material, file paths or endpoint URLs. Use RPC-read balances for cleanup preview estimates.

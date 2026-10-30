@@ -124,7 +124,7 @@ When `stake_accounts` is supplied for a dry run, the backend must build exactly 
 
 ### Release status
 
-This branch prepares **2.0.0 (unreleased)**. Until it is published, the package commands below install the latest published release. To test this checkout instead, run `npm ci`, `npm run build`, and point your MCP client at `node dist/index.js`. Merging this branch does not publish the package.
+Version **2.0.0** requires Node.js 20 or newer. The package commands below install the latest published release. To use a local checkout instead, run `npm ci`, `npm run build`, and point your MCP client at `node dist/index.js`.
 
 ### Quick install (recommended)
 

@@ -16,11 +16,15 @@ export class ScanCache<T> {
       this.store.delete(key);
       return null;
     }
+    this.store.delete(key);
+    this.store.set(key, entry);
     return { data: entry.data, ageMs };
   }
 
   set(key: string, data: T): void {
-    if (this.store.size > 1000) this.evictExpired();
+    this.evictExpired();
+    this.store.delete(key);
+    while (this.store.size >= 256) this.store.delete(this.store.keys().next().value!);
     this.store.set(key, { data, timestamp: Date.now() });
   }
 

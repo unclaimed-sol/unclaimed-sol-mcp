@@ -1,12 +1,12 @@
 {
   "name": "@unclaimed-sol/mcp",
-  "version": "1.3.1",
+  "version": "2.0.0",
   "mcpName": "io.github.nedim1511/unclaimed-sol",
   "repository": {
     "type": "git",
     "url": "https://github.com/unclaimed-sol/unclaimed-sol-mcp"
   },
-  "description": "The first Vibe Claiming MCP server: let AI agents scan and reclaim dormant SOL on Solana — rent from token accounts and spam NFTs, program buffers, deactivated stakes, and DeFi rewards. Dry-run + execution-token safety, local signing, keypair never leaves your machine.",
+  "description": "The first Vibe Claiming MCP server: let AI agents scan and reclaim dormant SOL on Solana — rent from token accounts, program buffers, deactivated stakes, and DeFi rewards. Dry-run + execution-token safety, local signing, keypair never leaves your machine.",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
@@ -16,7 +16,10 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "audit:production": "npm audit --omit=dev --audit-level=high",
+    "test:cleanup-runtime": "npm run build && node scripts/test-cleanup-runtime.mjs",
+    "test:package": "npm run build && node scripts/test-package.mjs"
   },
   "files": [
     "dist"
@@ -51,15 +54,18 @@
   ],
   "license": "MIT",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.26.0",
-    "@solana/web3.js": "^1.98.4",
-    "@unclaimedsol/spl-burn-close-sdk": "^1.2.1",
-    "bs58": "^6.0.0",
-    "zod": "^4.3.6"
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "@solana/web3.js": "1.98.4",
+    "@unclaimedsol/spl-burn-close-sdk": "1.4.0",
+    "bs58": "6.0.0",
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@types/node": "^25.2.3",
     "typescript": "^5.9.3",
     "vitest": "^4.0.18"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

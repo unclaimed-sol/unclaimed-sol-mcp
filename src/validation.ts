@@ -51,3 +51,23 @@ export class WalletValidationError extends Error {
     this.name = 'WalletValidationError';
   }
 }
+
+export class ToolInputError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ToolInputError';
+  }
+}
+
+/** Parse tool arguments, reporting field-level problems instead of a generic failure. */
+export function parseToolInput<T>(
+  schema: { safeParse(input: unknown): { success: true; data: T } | { success: false; error: { issues: { path: PropertyKey[]; message: string }[] } } },
+  args: unknown,
+): T {
+  const result = schema.safeParse(args ?? {});
+  if (result.success) return result.data;
+  const details = result.error.issues
+    .map((issue) => `${issue.path.map(String).join('.') || 'input'}: ${issue.message}`)
+    .join('; ');
+  throw new ToolInputError(`Invalid input. ${details}`);
+}

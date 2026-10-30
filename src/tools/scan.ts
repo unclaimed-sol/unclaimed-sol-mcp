@@ -5,6 +5,8 @@ import { ScanCache } from '../cache.js';
 import {
   validateWalletAddress,
   WalletValidationError,
+  ToolInputError,
+  parseToolInput,
 } from '../validation.js';
 import { formatSol } from '../formatter.js';
 import { WEBSITE_URL } from '../constants.js';
@@ -54,7 +56,7 @@ export async function handleScan(
   scanner: ScannerService,
 ): Promise<{ content: { type: string; text: string }[]; isError?: boolean }> {
   try {
-    const { wallet_address } = InputSchema.parse(args ?? {});
+    const { wallet_address } = parseToolInput(InputSchema, args);
     const resolvedAddress =
       wallet_address || config.keypair?.publicKey.toBase58();
     if (!resolvedAddress) {
@@ -78,6 +80,9 @@ export async function handleScan(
       cacheAgeSec = Math.round(cached.ageMs / 1000);
     } else {
       const summary = await scanner.getScanSummary(wallet);
+      if (summary.safeSummaryAvailable === false) {
+        return { content: [{ type: 'text', text: 'Safe cleanup estimate is unavailable. No automatic claim is suggested; retry the scan later.' }], isError: true };
+      }
       data = {
         totalSol: summary.totalClaimableSol,
         maxSol: summary.maxClaimableSol ?? summary.totalClaimableSol,
@@ -89,7 +94,7 @@ export async function handleScan(
 
     return buildResponse(data, config.claimEnabled, url, cacheAgeSec);
   } catch (err) {
-    if (err instanceof WalletValidationError) {
+    if (err instanceof WalletValidationError || err instanceof ToolInputError) {
       return { content: [{ type: 'text', text: err.message }], isError: true };
     }
     return {
@@ -97,8 +102,7 @@ export async function handleScan(
         {
           type: 'text',
           text:
-            (err as Error).message ||
-            'Scanner temporarily unavailable. Visit https://unclaimedsol.com directly.',
+            'SCAN_UNAVAILABLE: scanner request could not be completed.',
         },
       ],
       isError: true,

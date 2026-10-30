@@ -15,6 +15,8 @@ import {
   validateWalletAddress,
   verifyWalletMatchesKeypair,
   WalletValidationError,
+  ToolInputError,
+  parseToolInput,
 } from '../validation.js';
 import { formatSol, formatSolFromLamports } from '../formatter.js';
 import {
@@ -38,10 +40,6 @@ const tokenStore = new ExecutionTokenStore<RewardsBuildTxResponse>(
 type RewardsFeeCapSource =
   | RewardsScanResponse
   | RewardsBuildTxResponse['rewardsSummary'];
-
-function totalLamportsForRewards(source: RewardsFeeCapSource): number {
-  return 'totalLamports' in source ? source.totalLamports : source.total;
-}
 
 function pumpNativeLamportsForRewards(source: RewardsFeeCapSource): number {
   return (
@@ -67,33 +65,16 @@ function calculateRewardsFeeCaps(source: RewardsFeeCapSource): {
 } {
   const pumpNativeLamports = pumpNativeLamportsForRewards(source);
   const accumulatorCloseLamports = accumulatorCloseLamportsForRewards(source);
-  const totalLamports = totalLamportsForRewards(source);
-  const nonPumpLamports = Math.max(
-    0,
-    totalLamports - pumpNativeLamports - accumulatorCloseLamports,
-  );
-  const pumpNativeFeeLamports = Math.min(
-    Math.floor((pumpNativeLamports * PUMP_REWARDS_FEE_BPS) / 10_000),
-    Number(PUMP_REWARDS_FEE_CAP_LAMPORTS),
-  );
-  const accumulatorCloseFeeLamports = Math.floor(
-    (accumulatorCloseLamports * 500) / 10_000,
-  );
-  const nonPumpFeeLamports = Math.floor(
-    (nonPumpLamports * REWARDS_FEE_BPS) / 10_000,
-  );
+  const pumpFee = BigInt(pumpNativeLamports) * BigInt(PUMP_REWARDS_FEE_BPS) / 10_000n;
+  const pumpNativeFeeLamports = pumpFee > PUMP_REWARDS_FEE_CAP_LAMPORTS
+    ? PUMP_REWARDS_FEE_CAP_LAMPORTS : pumpFee;
+  const accumulatorCloseFeeLamports = BigInt(accumulatorCloseLamports) * 500n / 10_000n;
 
-  const usdcTotalBaseUnits = BigInt(
-    Math.max(0, Math.trunc(source.usdcRewards?.totalBaseUnits ?? 0)),
-  );
-  const usdcFeeBaseUnits =
-    (usdcTotalBaseUnits * BigInt(PUMP_REWARDS_FEE_BPS)) / 10_000n;
+  const usdcTotalBaseUnits = BigInt(source.usdcRewards?.totalBaseUnits ?? 0);
+  const usdcFeeBaseUnits = usdcTotalBaseUnits * BigInt(PUMP_REWARDS_FEE_BPS) / 10_000n;
 
   return {
-    nativeLamports:
-      pumpNativeFeeLamports +
-      accumulatorCloseFeeLamports +
-      nonPumpFeeLamports,
+    nativeLamports: Number(pumpNativeFeeLamports + accumulatorCloseFeeLamports),
     usdcBaseUnits:
       usdcFeeBaseUnits > PUMP_REWARDS_USDC_FEE_CAP_BASE_UNITS
         ? PUMP_REWARDS_USDC_FEE_CAP_BASE_UNITS
@@ -111,13 +92,13 @@ export function getClaimRewardsToolDefinition(keypairWallet?: string) {
   return {
     name: 'claim_rewards',
     description:
-      'Claim uncollected DeFi rewards (cashback, creator fees, and more) for a Solana wallet. ' +
-      'Signs and broadcasts locally (Pump/PumpSwap 3% capped at 1 SOL or 100 USDC; other rewards 15%). ' +
+      'Claim Pump/PumpSwap cashback and creator fees for a Solana wallet. ' +
+      'Signs and broadcasts locally (3% capped at 1 SOL or 100 USDC). Other reward sources are not supported. ' +
       'Call with dry_run (default) first, then with execution_token to execute.',
     annotations: {
       title: 'Claim DeFi Rewards',
       readOnlyHint: false,
-      destructiveHint: false,
+      destructiveHint: true,
       idempotentHint: false,
       openWorldHint: true,
     },
@@ -161,7 +142,7 @@ export async function handleClaimRewards(
 ): Promise<{ content: { type: string; text: string }[]; isError?: boolean }> {
   try {
     const { wallet_address, dry_run, execution_token } =
-      InputSchema.parse(args ?? {});
+      parseToolInput(InputSchema, args);
     const resolvedAddress =
       wallet_address || config.keypair?.publicKey.toBase58();
     if (!resolvedAddress) {
@@ -188,6 +169,12 @@ export async function handleClaimRewards(
         };
       }
 
+      const previewTransactions = buildTxResp.transactions.map(b64 => Transaction.from(Buffer.from(b64, 'base64')));
+      const previewCaps = calculateRewardsFeeCaps(buildTxResp.rewardsSummary);
+      validateTransactionPrograms(previewTransactions, walletPubkey, REWARDS_FEE_BPS,
+        buildTxResp.rewardsSummary.totalLamports, previewCaps.nativeLamports,
+        previewCaps.usdcBaseUnits, 'rewards');
+      await signer.verifyRewards(previewTransactions, walletPubkey);
       const token = tokenStore.generate(wallet, buildTxResp);
       const { rewardsSummary: s } = buildTxResp;
 
@@ -198,9 +185,7 @@ export async function handleClaimRewards(
         `  PumpSwap cashback: ${formatSolFromLamports(s.pumpSwapCashback)}\n` +
         `  Pump creator fees: ${formatSolFromLamports(s.pumpCreatorFee)}\n` +
         `  PumpSwap creator fees: ${formatSolFromLamports(s.pumpSwapCreatorFee)}\n` +
-        `  Raydium LaunchLab creator fees: ${formatSolFromLamports(s.raydiumLaunchLabCreatorFee)}\n` +
-        `  Raydium CPMM creator fees: ${formatSolFromLamports(s.raydiumCpmmCreatorFee)}\n` +
-        `  Meteora DBC creator fees: ${formatSolFromLamports(s.meteoraDbcCreatorFee)}\n` +
+        `  Accumulator rent: ${formatSolFromLamports(s.pumpAccumulatorCloseLamports + s.pumpSwapAccumulatorCloseLamports)}\n` +
         `  Total: ${formatSolFromLamports(s.totalLamports)}\n` +
         `  Estimated service fee: ${formatSolFromLamports(s.estimatedFeeLamports)}\n` +
         `  Estimated net: ${formatSolFromLamports(s.estimatedNetLamports)}\n` +
@@ -234,17 +219,15 @@ export async function handleClaimRewards(
       };
     }
 
-    const buildTxResponse = tokenStore.validate(execution_token, wallet);
+    const buildTxResponse = tokenStore.take(execution_token, wallet);
 
     // Deserialize transactions
     const transactions = buildTxResponse.transactions.map((b64) =>
       Transaction.from(Buffer.from(b64, 'base64')),
     );
 
-    // Independent rewards scan — do not trust the build-tx summary alone.
-    // Pump/PumpSwap claim amounts are determined on-chain (not in tx data),
-    // so we fetch the current on-chain totals and use the lower of the two
-    // as the fee cap basis.
+    // A second backend response detects contract drift, but is NOT an
+    // independent on-chain observation and cannot defeat a malicious backend.
     const independentScan = await scanner.getRewardsScan(wallet);
     const feeBasis = Math.min(
       independentScan.total,
@@ -271,7 +254,10 @@ export async function handleClaimRewards(
       feeBasis,
       explicitMaxFeeLamports,
       explicitMaxUsdcFeeBaseUnits,
+      'rewards',
     );
+
+    await signer.verifyRewards(transactions, walletPubkey);
 
     // Balance snapshot (pre)
     const preBal = await signer.getBalance(walletPubkey);
@@ -283,34 +269,37 @@ export async function handleClaimRewards(
     );
 
     // Balance snapshot (post)
-    const postBal = await signer.getBalance(walletPubkey);
+    const postBal = await signer.getBalance(walletPubkey).catch(() => null);
 
-    // Consume token
-    tokenStore.consume(execution_token, wallet);
 
     const confirmed = results.filter((r) => r.status === 'confirmed');
-    const failed = results.filter((r) => r.status === 'failed');
-    const netSol = (postBal - preBal) / 1e9;
+    const failed = results.filter((r) => r.status !== 'confirmed');
+    const netSol = postBal === null ? null : (postBal - preBal) / 1e9;
 
     let text: string;
 
     if (failed.length === 0) {
       text =
         `Rewards claimed across ${confirmed.length} transaction(s).\n\n` +
-        `Confirmed net: ${formatSol(Math.max(0, netSol))} (wallet balance change, inclusive of fees)\n\n` +
+        `Confirmed net: ${(netSol === null ? 'unavailable (balance RPC failed; see signatures)' : formatSol(Math.max(0, netSol)))} (wallet balance change, inclusive of fees)\n\n` +
         `Signatures:\n${confirmed.map((r, i) => `${i + 1}. ${r.signature}`).join('\n')}`;
     } else if (confirmed.length > 0) {
       text =
         `Partial claim: ${confirmed.length}/${results.length} txs confirmed.\n\n` +
-        `Confirmed net so far: ${formatSol(Math.max(0, netSol))} (wallet balance change)\n\n` +
+        `Confirmed net so far: ${(netSol === null ? 'unavailable (balance RPC failed; see signatures)' : formatSol(Math.max(0, netSol)))} (wallet balance change)\n\n` +
         `Successful:\n${confirmed.map((r, i) => `${i + 1}. ${r.signature}`).join('\n')}\n\n` +
-        `Failed:\n${failed.map((r, i) => `${i + 1}. ${r.error || 'unknown'}`).join('\n')}\n\n` +
+        `Failed:\n${failed.map((r, i) => `${i + 1}. ${r.error || 'unknown'}${r.signature ? ` — ${r.signature}` : ''}`).join('\n')}\n\n` +
         `Run claim_rewards again (dry_run first) to retry.`;
     } else {
       text =
         `All ${results.length} transaction(s) failed.\n\n` +
-        `${failed.map((r, i) => `${i + 1}. ${r.error || 'unknown'}`).join('\n')}\n\n` +
+        `${failed.map((r, i) => `${i + 1}. ${r.error || 'unknown'}${r.signature ? ` — ${r.signature}` : ''}`).join('\n')}\n\n` +
         `Run claim_rewards again (dry_run first) to retry.`;
+    }
+
+    if (results.some(result => result.status === 'unknown')) {
+      text = `Submission outcome is uncertain. Do not assume these transactions failed. Check the signatures before a fresh dry run.\n\n` +
+        results.map(result => `${result.status}: ${result.signature} ${result.error ?? ''}`).join('\n');
     }
 
     text += `\n\nWallet: https://solscan.io/account/${wallet}`;
@@ -319,6 +308,7 @@ export async function handleClaimRewards(
   } catch (err) {
     if (
       err instanceof WalletValidationError ||
+      err instanceof ToolInputError ||
       err instanceof ExecutionTokenError
     ) {
       return {
@@ -342,8 +332,7 @@ export async function handleClaimRewards(
         {
           type: 'text',
           text:
-            (err as Error).message ||
-            `Unexpected error. Visit ${WEBSITE_URL} directly.`,
+            'CLAIM_FAILED: request could not be completed. Obtain a fresh dry run; check any submitted signatures first.',
         },
       ],
       isError: true,

@@ -80,3 +80,15 @@ describe('ScanCache', () => {
     expect(cache.get('key-0')).toBeNull();
   });
 });
+
+describe('ScanCache hard bound', () => {
+  it('evicts least recently used live entries at 256', () => {
+    const cache = new ScanCache<number>();
+    for (let i = 0; i < 256; i++) cache.set(String(i), i);
+    cache.get('0');
+    cache.set('256', 256);
+    expect(cache.get('0')?.data).toBe(0);
+    expect(cache.get('1')).toBeNull();
+    expect(cache.get('256')?.data).toBe(256);
+  });
+});

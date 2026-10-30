@@ -4,10 +4,11 @@ import { createRequire } from 'node:module';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
+  type Tool,
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { loadConfig } from './config.js';
+import { ConfigError, logHost, loadConfig } from './config.js';
 import { ScannerService } from './services/scanner.js';
 import { TransactionBuilder } from './services/transaction.js';
 import { SignerService } from './services/signer.js';
@@ -42,7 +43,7 @@ async function main() {
   const keypairWallet = config.keypair?.publicKey.toBase58();
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
-    const tools = [getScanToolDefinition(keypairWallet)];
+    const tools: Tool[] = [getScanToolDefinition(keypairWallet)];
     if (config.claimEnabled) {
       tools.push(getClaimToolDefinition(keypairWallet));
       tools.push(getClaimRewardsToolDefinition(keypairWallet));
@@ -94,8 +95,8 @@ async function main() {
   await server.connect(transport);
 
   console.error(`unclaimed-sol-mcp v${pkg.version}`);
-  console.error(`  API: ${config.apiUrl}`);
-  console.error(`  RPC: ${config.rpcUrl}`);
+  console.error(`  API: ${logHost(config.apiUrl)}`);
+  console.error(`  RPC: ${logHost(config.rpcUrl)}`);
   console.error(
     `  Vibe Claiming: ${config.claimEnabled ? 'ENABLED' : 'disabled'}`,
   );
@@ -104,6 +105,8 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error('Fatal:', err.message);
+  console.error(err instanceof ConfigError
+    ? `Fatal: ${err.message}`
+    : 'Fatal: MCP_STARTUP_FAILED. Check configuration and local file permissions.');
   process.exit(1);
 });

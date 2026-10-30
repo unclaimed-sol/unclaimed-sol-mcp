@@ -1,0 +1,9 @@
+{
+  "checked_at": "2026-10-30",
+  "program": "UNCaXzXkR3vp8mbCJyxWUvwuRk5uHgzrwe6jcWPfiUR",
+  "rust_source_commit": "1f2b10ae668c47de97627de69cdf656878ed9b0e",
+  "local_sha256": "40c9eb68c0a6e835d8789e87da2aa5f67b9cb18498814078b75e2129b44054aa",
+  "deployed_sha256": "40c9eb68c0a6e835d8789e87da2aa5f67b9cb18498814078b75e2129b44054aa",
+  "matches_exactly": true,
+  "npm_sdk_version": "1.4.0"
+}

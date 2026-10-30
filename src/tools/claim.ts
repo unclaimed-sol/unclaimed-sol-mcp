@@ -1,10 +1,12 @@
 import { z } from 'zod';
-import { randomBytes } from 'crypto';
+import { ExecutionTokenStore, ExecutionTokenError } from '../execution-token-store.js';
 import { Config } from '../config.js';
 import {
   ScannerService,
+  ScannerError,
   TokenAccountInfo,
   BufferAccountInfo,
+  BuffersResponse,
 } from '../services/scanner.js';
 import {
   TransactionBuilder,
@@ -16,108 +18,33 @@ import {
   validateWalletAddress,
   verifyWalletMatchesKeypair,
   WalletValidationError,
+  ToolInputError,
+  parseToolInput,
 } from '../validation.js';
 import { formatSol } from '../formatter.js';
 import {
   WEBSITE_URL,
-  EXECUTION_TOKEN_TTL_MS,
-  MAX_ACTIVE_TOKENS,
   DEFAULT_MAX_TRANSACTIONS,
 } from '../constants.js';
 
-// ---- Execution Token Store ----
-
-interface TokenEntry {
-  token: string;
-  wallet: string;
-  // Account set approved during dry_run (already capped by max_transactions).
+// Discovery uses backend safe mode; RPC checks gate the actual target set.
+// Checked on-chain amounts and exact approvals require a separate rollout.
+const tokenStore = new ExecutionTokenStore<{
   tokens: TokenAccountInfo[];
   buffers: BufferAccountInfo[];
   plan: ClaimPlan;
   maxTransactions: number;
-  createdAt: number;
-}
-
-const tokensByWallet = new Map<string, TokenEntry>();
-const allTokens = new Map<string, TokenEntry>();
-
-function generateToken(
-  wallet: string,
-  tokens: TokenAccountInfo[],
-  buffers: BufferAccountInfo[],
-  plan: ClaimPlan,
-  maxTransactions: number,
-): string {
-  // Evict expired
-  const now = Date.now();
-  for (const [t, e] of allTokens) {
-    if (now - e.createdAt > EXECUTION_TOKEN_TTL_MS) {
-      allTokens.delete(t);
-      if (tokensByWallet.get(e.wallet)?.token === t)
-        tokensByWallet.delete(e.wallet);
-    }
-  }
-  // Enforce max (evict oldest)
-  while (allTokens.size >= MAX_ACTIVE_TOKENS) {
-    let oldest: string | null = null;
-    let oldestTime = Infinity;
-    for (const [t, e] of allTokens) {
-      if (e.createdAt < oldestTime) {
-        oldestTime = e.createdAt;
-        oldest = t;
-      }
-    }
-    if (oldest) {
-      const e = allTokens.get(oldest)!;
-      allTokens.delete(oldest);
-      if (tokensByWallet.get(e.wallet)?.token === oldest)
-        tokensByWallet.delete(e.wallet);
-    }
-  }
-  // Invalidate previous for this wallet (max 1 per wallet)
-  const prev = tokensByWallet.get(wallet);
-  if (prev) allTokens.delete(prev.token);
-
-  const token = randomBytes(16).toString('hex');
-  const entry: TokenEntry = {
-    token,
-    wallet,
-    tokens,
-    buffers,
-    plan,
-    maxTransactions,
-    createdAt: now,
-  };
-  allTokens.set(token, entry);
-  tokensByWallet.set(wallet, entry);
-  return token;
-}
-
-function validateToken(token: string, wallet: string): TokenEntry {
-  const entry = allTokens.get(token);
-  if (!entry)
-    throw new ClaimError(
-      'Run claim_sol with dry_run first to get an execution token.',
-    );
-  if (entry.wallet !== wallet)
-    throw new ClaimError('Execution token does not match this wallet.');
-  if (Date.now() - entry.createdAt > EXECUTION_TOKEN_TTL_MS) {
-    allTokens.delete(token);
-    tokensByWallet.delete(wallet);
-    throw new ClaimError('Execution token expired. Run dry_run again.');
-  }
-  return entry;
-}
-
-function consumeToken(token: string, wallet: string): void {
-  allTokens.delete(token);
-  if (tokensByWallet.get(wallet)?.token === token)
-    tokensByWallet.delete(wallet);
-}
+}>('claim_sol');
 
 function shortenAddress(value: string): string {
   if (value.length <= 10) return value;
   return `${value.slice(0, 4)}...${value.slice(-4)}`;
+}
+
+function formatBalanceChange(sol: number | null): string {
+  if (sol === null) return 'unavailable (balance RPC failed; see signatures)';
+  if (sol === 0) return '0 SOL';
+  return `${sol < 0 ? '-' : ''}${formatSol(Math.abs(sol))}`;
 }
 
 function tokenLabel(token: TokenAccountInfo): string {
@@ -158,35 +85,12 @@ function isExcludedByNameOrSymbol(
 function buildTokenPreview(tokens: TokenAccountInfo[]): string {
   if (tokens.length === 0) return '';
 
-  const empty = tokens.filter((t) => t.amountUi === 0);
-  const nonEmpty = tokens.filter((t) => t.amountUi > 0);
-  const MAX_PER_GROUP = 8;
-  const lines: string[] = ['Tokens selected for burn (safe mode):'];
-
-  const appendGroup = (
-    title: string,
-    group: TokenAccountInfo[],
-    includeBalance: boolean,
-  ) => {
-    if (group.length === 0) return;
-    lines.push('', `${title}:`);
-
-    for (const token of group.slice(0, MAX_PER_GROUP)) {
-      const base = `  - ${tokenLabel(token)} — ${shortenAddress(token.mintKey)}`;
-      if (!includeBalance) {
-        lines.push(base);
-        continue;
-      }
-      lines.push(`${base} (balance: ${token.amountUi})`);
-    }
-
-    if (group.length > MAX_PER_GROUP) {
-      lines.push(`  ...and ${group.length - MAX_PER_GROUP} more`);
-    }
-  };
-
-  appendGroup('Empty token accounts', empty, false);
-  appendGroup('Non-zero token accounts', nonEmpty, true);
+  const previewLimit = 8;
+  const lines = ['Empty token accounts selected for closure (safe mode):',
+    ...tokens.slice(0, previewLimit).map(token =>
+      `  - ${tokenLabel(token)} — ${shortenAddress(token.mintKey)}`),
+  ];
+  if (tokens.length > previewLimit) lines.push(`  ...and ${tokens.length - previewLimit} more`);
 
   return `\n\n${lines.join('\n')}`;
 }
@@ -202,7 +106,7 @@ export function getClaimToolDefinition(keypairWallet?: string) {
     name: 'claim_sol',
     description:
       'Claim reclaimable SOL from dormant token and buffer accounts. ' +
-      'Burns worthless token balances and closes accounts to reclaim rent. ' +
+      'Closes empty token accounts and program buffers to reclaim rent. ' +
       'This action is irreversible — closed accounts cannot be recovered. ' +
       'Signs and broadcasts locally via UnclaimedSOL on-chain program. ' +
       'Token cleanup lets the user keep up to 0.002 SOL per closed account; buffers use a 5% fee. ' +
@@ -237,6 +141,7 @@ export function getClaimToolDefinition(keypairWallet?: string) {
           type: 'integer',
           description: 'Max txs to send. Default 10.',
           default: DEFAULT_MAX_TRANSACTIONS,
+          maximum: 25,
         },
         exclude: {
           type: 'array',
@@ -260,8 +165,9 @@ const InputSchema = z.object({
     .number()
     .int()
     .positive()
+    .max(25)
     .default(DEFAULT_MAX_TRANSACTIONS),
-  exclude: z.array(z.string()).optional(),
+  exclude: z.array(z.string().max(128)).max(256).optional(),
 });
 
 export async function handleClaim(
@@ -278,7 +184,7 @@ export async function handleClaim(
       execution_token,
       max_transactions,
       exclude,
-    } = InputSchema.parse(args ?? {});
+    } = parseToolInput(InputSchema, args);
     const resolvedAddress =
       wallet_address || config.keypair?.publicKey.toBase58();
     if (!resolvedAddress) {
@@ -296,11 +202,24 @@ export async function handleClaim(
 
     // ---- DRY RUN ----
     if (dry_run) {
+      let bufferNotice = '';
       // Fetch token + buffer accounts (always fresh, no cache)
       const [tokensResp, buffersResp] = await Promise.all([
         scanner.getClaimableTokens(wallet),
-        scanner.getClaimableBuffers(wallet),
+        scanner.getClaimableBuffers(wallet).catch(err => {
+          if (!(err instanceof ScannerError) && !(err instanceof Error && err.message === 'BUFFER_DISCOVERY_UNAVAILABLE')) throw err;
+          bufferNotice = 'Buffer discovery unavailable; buffers not included';
+          return { claimableSol: 0, buffers: [] } as BuffersResponse;
+        }),
       ]);
+
+      const checked = await signer.inspectCleanup(walletPubkey, tokensResp.tokens, buffersResp.buffers);
+      tokensResp.tokens = checked.tokens;
+      buffersResp.buffers = checked.buffers;
+      const omittedCount = checked.omitted;
+      if (omittedCount > 0) {
+        bufferNotice = `${bufferNotice ? `${bufferNotice}\n\n` : ''}${omittedCount} additional account(s) were not previewed; run claim_sol again after this claim.`;
+      }
 
       // Optionally fetch stake info for reporting
       let stakeInfo: { count: number; estimatedSol: number } | null =
@@ -309,6 +228,10 @@ export async function handleClaim(
         stakeInfo = await scanner.getClaimableStakes(wallet);
       } catch {
         /* non-fatal */
+      }
+
+      if (!tokensResp.tokens.some(t => !t.isFrozen) && buffersResp.buffers.length === 0) {
+        return { content: [{ type: 'text', text: `No token or buffer accounts to claim for this wallet.${checked.skipped > 0 ? ` Skipped ${checked.skipped} ineligible account(s).` : ''}${bufferNotice ? `\n\n${bufferNotice}` : ''}` }], isError: true };
       }
 
       const plan = await txBuilder.buildClaimPlan(
@@ -340,19 +263,15 @@ export async function handleClaim(
         selectedBufferSet.has(b.pubkey),
       );
 
-      const token = generateToken(
-        wallet,
-        selectedTokens,
-        selectedBuffers,
-        plan,
-        max_transactions,
-      );
+      const token = tokenStore.generate(wallet, {
+        tokens: selectedTokens, buffers: selectedBuffers, plan, maxTransactions: max_transactions,
+      });
 
       let text =
-        `Dry run — no transactions sent.\n\n` +
+        `Dry run — no transactions sent.${checked.skipped > 0 ? ` Skipped ${checked.skipped} ineligible account(s).` : ''}\n\n` +
         `Estimated claim: ${formatSol(plan.estimatedSol)} from ` +
         `${plan.tokenAccountCount} token accounts and ${plan.bufferAccountCount} buffer accounts ` +
-        `(token cleanup uses a 0.002 SOL user-net rule; buffers use a 5% fee).\n` +
+        `(token fee is max(2% rounded down, gross above 0.002 SOL); buffers use a 5% fee; network fees excluded).\n` +
         `Transactions needed: ${plan.transactionsNeeded}` +
         (plan.cappedByMaxTx
           ? ` of ${plan.totalTransactionsNeeded} (limited by max_transactions: ${max_transactions}` +
@@ -365,12 +284,12 @@ export async function handleClaim(
         text += `\n\n${plan.skippedFrozenCount} frozen account(s) skipped (cannot be closed).`;
       }
 
+      if (bufferNotice) text += `\n\n${bufferNotice}`;
       text += buildTokenPreview(selectedTokens);
 
       // Irreversibility warning
       text +=
-        `\n\nThis will permanently close these accounts and burn any remaining ` +
-        `token balances. This action is irreversible. For a visual breakdown of ` +
+        `\n\nEligible accounts will be permanently closed. Accounts that become ineligible may be skipped; estimates are not guaranteed proceeds. This action is irreversible. For a visual breakdown of ` +
         `each account, review at ${url} before proceeding.`;
 
       if (plan.tokenAccountCount > 0) {
@@ -406,30 +325,31 @@ export async function handleClaim(
       };
     }
 
-    const entry = validateToken(execution_token, wallet);
+    const entry = tokenStore.take(execution_token, wallet);
+    const checked = await signer.inspectCleanup(walletPubkey, entry.tokens, entry.buffers);
     const normalizedExclude = normalizeExclude(exclude);
-    const claimableTokens = entry.tokens.filter((t) => !t.isFrozen);
+    const claimableTokens = checked.tokens.filter((t) => !t.isFrozen);
     const filteredTokens = claimableTokens.filter(
       (t) => !isExcludedByNameOrSymbol(t, normalizedExclude),
     );
     const excludedTokenCount = claimableTokens.length - filteredTokens.length;
 
-    if (filteredTokens.length === 0 && entry.buffers.length === 0) {
+    if (filteredTokens.length === 0 && checked.buffers.length === 0) {
       return {
         content: [
           {
             type: 'text',
-            text: 'All claimable token accounts were excluded and there are no buffer accounts left to claim.',
+            text: `No eligible accounts remain after validation and exclusions.${checked.skipped > 0 ? ` Skipped ${checked.skipped} ineligible account(s).` : ''}`,
           },
         ],
         isError: true,
       };
     }
 
-    const plan = normalizedExclude.size > 0
+    const plan = normalizedExclude.size > 0 || checked.skipped > 0
       ? await txBuilder.buildClaimPlan(
         filteredTokens,
-        entry.buffers,
+        checked.buffers,
         walletPubkey,
         entry.maxTransactions,
         entry.plan.stakeInfo,
@@ -449,36 +369,42 @@ export async function handleClaim(
     );
 
     // Balance snapshot (post)
-    const postBal = await signer.getBalance(walletPubkey);
-
-    // Consume token
-    consumeToken(execution_token, wallet);
+    const postBal = await signer.getBalance(walletPubkey).catch(() => null);
 
     const confirmed = results.filter((r) => r.status === 'confirmed');
-    const failed = results.filter((r) => r.status === 'failed');
-    const netSol = (postBal - preBal) / 1e9;
+    const failed = results.filter((r) => r.status !== 'confirmed');
+    const netSol = postBal === null ? null : (postBal - preBal) / 1e9;
 
     let text: string;
 
     if (failed.length === 0) {
       text =
-        `Claimed across ${confirmed.length} transactions from ${plan.tokenAccountCount} token accounts and ${plan.bufferAccountCount} buffer accounts.\n\n` +
-        `Confirmed net: ${formatSol(Math.max(0, netSol))} (wallet balance change, inclusive of priority fees)\n\n` +
+        `Confirmed ${confirmed.length} transactions targeting ${plan.tokenAccountCount} token accounts and ${plan.bufferAccountCount} buffer accounts.\n\n` +
+        `Observed wallet balance change: ${formatBalanceChange(netSol)} (includes network fees and any concurrent wallet activity)\n\n` +
         `Signatures:\n${confirmed.map((r, i) => `${i + 1}. ${r.signature}`).join('\n')}`;
     } else if (confirmed.length > 0) {
       text =
         `Partial claim: ${confirmed.length}/${results.length} txs confirmed.\n\n` +
-        `Confirmed net so far: ${formatSol(Math.max(0, netSol))} (wallet balance change)\n\n` +
+        `Observed wallet balance change: ${formatBalanceChange(netSol)} (includes network fees and any concurrent wallet activity)\n\n` +
         `Successful:\n${confirmed.map((r, i) => `${i + 1}. ${r.signature}`).join('\n')}\n\n` +
-        `Failed:\n${failed.map((r, i) => `${i + 1}. ${r.error || 'unknown'}`).join('\n')}\n\n` +
+        `Not confirmed:\n${failed.map((r, i) => `${i + 1}. ${r.error || 'unknown'}${r.signature ? ` — ${r.signature}` : ''}`).join('\n')}\n\n` +
         `Run claim_sol again (dry_run first) to retry.`;
     } else {
       text =
-        `All ${results.length} transactions failed.\n\n` +
-        `${failed.map((r, i) => `${i + 1}. ${r.error || 'unknown'}`).join('\n')}\n\n` +
+        `No transactions confirmed (${results.length} attempted or checked).\n\n` +
+        `${failed.map((r, i) => `${i + 1}. ${r.error || 'unknown'}${r.signature ? ` — ${r.signature}` : ''}`).join('\n')}\n\n` +
         `Run claim_sol again (dry_run first) to retry.`;
     }
 
+    if (results.some(result => result.status === 'unknown')) {
+      text = 'Submission outcome is uncertain. Check these signatures before a fresh dry run.\n\n' +
+        results.map(result => `${result.status}: ${result.signature || '(not submitted)'} ${result.error ?? ''}`).join('\n');
+    }
+    if (confirmed.length > 0 && plan.tokenAccountCount > 0) {
+      text += '\n\nA confirmed transaction may skip token accounts that became ineligible. Account counts above are targets, not verified closures.';
+    }
+
+    if (checked.skipped > 0) text = `Skipped ${checked.skipped} ineligible account(s) during execution revalidation.\n\n${text}`;
     if (excludedTokenCount > 0) {
       text = `Excluded ${excludedTokenCount} token account(s) by name/symbol filter.\n\n${text}`;
     }
@@ -493,7 +419,8 @@ export async function handleClaim(
   } catch (err) {
     if (
       err instanceof WalletValidationError ||
-      err instanceof ClaimError
+      err instanceof ToolInputError ||
+      err instanceof ClaimError || err instanceof ExecutionTokenError || err instanceof ScannerError
     ) {
       return {
         content: [{ type: 'text', text: err.message }],
@@ -516,8 +443,7 @@ export async function handleClaim(
         {
           type: 'text',
           text:
-            (err as Error).message ||
-            'Unexpected error. Visit https://unclaimedsol.com directly.',
+            'CLAIM_FAILED: request could not be completed. Obtain a fresh dry run; check any submitted signatures first.',
         },
       ],
       isError: true,

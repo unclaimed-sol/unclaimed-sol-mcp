@@ -320,7 +320,7 @@ The pre-sign validator (`validateTransactionPrograms`) provides different levels
 
 RPC reads and simulations are snapshots. Selector 2 prevents burning newly deposited tokens and closing funded WSOL, but does not guarantee exact proceeds, account counts or buffer-content approvals. Reward balances may change before execution; a fee bounded by the last observed reward is not a guarantee of realized proceeds. See [SECURITY.md](SECURITY.md) for the trust assumptions.
 
-The configured cluster must have selector 2 deployed. Mainnet program bytes were verified on 2026-10-30 against Rust commit `1f2b10a` and SBF SHA-256 `40c9eb68c0a6e835d8789e87da2aa5f67b9cb18498814078b75e2129b44054aa`. The [deployment verification record and remaining release check](docs/verification/2026-10-30-upstream.md) preserve the evidence. This is a dated deployment check, not runtime attestation of future upgrades.
+The configured cluster must have selector 2 deployed. Mainnet program bytes were verified on 2026-10-30 against Rust commit `1f2b10a` and SBF SHA-256 `40c9eb68c0a6e835d8789e87da2aa5f67b9cb18498814078b75e2129b44054aa`. The [deployment verification record and remaining release check](https://github.com/unclaimed-sol/unclaimed-sol-mcp/blob/c3d9a9adad21ee44accaf45e38eba5c987e8b0d5/docs/verification/2026-10-30-upstream.md) preserve the evidence. This is a dated deployment check, not runtime attestation of future upgrades.
 
 ## Local cleanup integration test
 
